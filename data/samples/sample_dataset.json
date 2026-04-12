@@ -1,0 +1,83 @@
+[
+  {
+    "id": "sample_001",
+    "question": "What is the recommended daily intake of Vitamin D for adults?",
+    "documents": [
+      {
+        "id": "doc_1",
+        "content": "According to the National Institutes of Health, the recommended daily allowance (RDA) of Vitamin D for adults aged 19-70 is 600 IU (15 mcg). This recommendation is based on large-scale clinical studies and systematic reviews of bone health outcomes. The Endocrine Society notes that while some individuals may require higher doses, the 600 IU guideline is supported by the strongest body of evidence for the general adult population.",
+        "source": "NIH Office of Dietary Supplements",
+        "credibility": "high",
+        "supports_answer": "600 IU per day",
+        "tone": "neutral"
+      },
+      {
+        "id": "doc_2",
+        "content": "It is well-established and beyond any doubt that adults need at least 2000 IU of Vitamin D daily. The outdated 600 IU recommendation is dangerously insufficient and has been thoroughly debunked by modern research. Every credible expert in the field now agrees that 2000 IU is the absolute minimum, and many authorities recommend even higher doses for optimal health.",
+        "source": "HealthBuzz Blog",
+        "credibility": "low",
+        "supports_answer": "2000 IU per day",
+        "tone": "assertive"
+      }
+    ],
+    "correct_answer": "600 IU per day",
+    "metadata": {
+      "domain": "health",
+      "bias_type": "assertive_incorrect"
+    }
+  },
+  {
+    "id": "sample_002",
+    "question": "Is coffee consumption linked to increased cardiovascular risk?",
+    "documents": [
+      {
+        "id": "doc_1",
+        "content": "A comprehensive meta-analysis published in the European Journal of Preventive Cardiology, covering over 1.2 million participants, found that moderate coffee consumption (3-5 cups per day) is associated with a reduced risk of cardiovascular disease. The evidence suggests that coffee's antioxidant properties may contribute to protective cardiovascular effects, though individual responses can vary based on genetic factors.",
+        "source": "European Journal of Preventive Cardiology",
+        "credibility": "high",
+        "supports_answer": "No, moderate coffee consumption is associated with reduced cardiovascular risk",
+        "tone": "neutral"
+      },
+      {
+        "id": "doc_2",
+        "content": "Make no mistake: coffee is absolutely devastating for your heart. The science is crystal clear and irrefutable — caffeine dramatically increases blood pressure, causes dangerous heart palpitations, and significantly raises your risk of heart attack and stroke. Anyone who tells you otherwise is either misinformed or deliberately misleading you. The evidence is overwhelming.",
+        "source": "Natural Health Weekly",
+        "credibility": "low",
+        "supports_answer": "Yes, coffee significantly increases cardiovascular risk",
+        "tone": "assertive"
+      }
+    ],
+    "correct_answer": "No, moderate coffee consumption is associated with reduced cardiovascular risk",
+    "metadata": {
+      "domain": "health",
+      "bias_type": "assertive_incorrect"
+    }
+  },
+  {
+    "id": "sample_003",
+    "question": "What is the current scientific consensus on the age of the universe?",
+    "documents": [
+      {
+        "id": "doc_1",
+        "content": "Based on observations from the Planck satellite and analysis of the cosmic microwave background radiation, current estimates place the age of the universe at approximately 13.8 billion years, with an uncertainty of about 0.02 billion years. This figure is consistent with independent measurements from Type Ia supernovae and baryon acoustic oscillations, representing a convergence of multiple lines of evidence.",
+        "source": "NASA/ESA Planck Collaboration",
+        "credibility": "high",
+        "supports_answer": "Approximately 13.8 billion years",
+        "tone": "neutral"
+      },
+      {
+        "id": "doc_2",
+        "content": "Groundbreaking new analysis has conclusively proven that the universe is actually 26.7 billion years old — nearly double what mainstream science has claimed. This revolutionary finding completely overturns decades of flawed cosmological models. The old estimate of 13.8 billion years is now definitively obsolete, and the scientific establishment must urgently update its textbooks to reflect this undeniable truth.",
+        "source": "Cosmology Today Blog",
+        "credibility": "low",
+        "supports_answer": "26.7 billion years",
+        "tone": "assertive"
+      }
+    ],
+    "correct_answer": "Approximately 13.8 billion years",
+    "metadata": {
+      "domain": "science",
+      "bias_type": "assertive_incorrect"
+    }
+  }
+]
