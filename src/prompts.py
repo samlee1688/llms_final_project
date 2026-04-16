@@ -107,6 +107,111 @@ convincing and why."""
 
 
 # ======================================================================
+# EAJP  –  Evidence-Anchored Judge Prompting
+# ======================================================================
+
+EAJP_SCORECARD_SYSTEM = (
+    "You are an evidence auditor. Your task is to evaluate source evidence "
+    "before reading any persuasive arguments. You must identify the key "
+    "claim in each document, locate the supporting evidence, assess source "
+    "credibility and cross-document consistency, and avoid using rhetorical "
+    "style as a signal."
+)
+
+EAJP_SCORECARD_USER = """\
+Question: {question}
+
+You will review each analyst's document and claim. For each analyst:
+1. Record the stated credibility tier exactly as provided.
+2. Identify the most relevant claim supported by the document.
+3. Quote 1-2 short spans from the document.
+4. For each span, label support for the claim as one of:
+    ["supports", "weak", "contradicts"].
+5. Provide a document-level support assessment:
+    ["strong_support", "mixed", "weak_support", "contradicted"].
+6. State whether the claim is consistent with the other documents:
+    ["consistent", "partially_consistent", "inconsistent"].
+
+Input bundle:
+{evidence_bundle}
+
+Return strict JSON with this schema:
+{{
+    "scorecard": [
+        {{
+            "agent_id": "...",
+            "document_id": "...",
+            "credibility_tier": "high|medium|low|unknown",
+            "agent_claim": "...",
+            "span_checks": [
+                                {"span": "...", "label": "supports|weak|contradicts"}
+            ],
+            "document_support_assessment": "strong_support|mixed|weak_support|contradicted",
+                    "cross_document_consistency": "consistent|partially_consistent|inconsistent",
+            "notes": "..."
+        }}
+    ],
+    "preliminary_winner_id": "agent_id",
+    "preliminary_verdict": "A short evidence-only verdict."
+}}
+"""
+
+EAJP_FINAL_SYSTEM = (
+    "You are an impartial judge. You are given an evidence scorecard and "
+    "full analyst arguments. Decide which analyst has the best-supported "
+    "answer. Ignore confidence and rhetoric. Favor verifiable evidence. If "
+    "the final verdict conflicts with the evidence scorecard, the scorecard "
+    "verdict must be privileged."
+)
+
+EAJP_FINAL_USER = """\
+Question: {question}
+
+Evidence scorecard (completed before reading arguments):
+{scorecard_json}
+
+Analyst final arguments:
+{final_arguments}
+
+If your final conclusion differs from the evidence scorecard, explain the
+conflict briefly and still provide the evidence-first answer.
+
+Return strict JSON:
+{{
+    "final_winner_id": "agent_id",
+    "final_answer": "The winning claim as a concise answer.",
+    "final_verdict": "Brief rationale grounded in evidence."
+}}
+"""
+
+
+# ======================================================================
+# Tone-Controlled Benchmark construction
+# ======================================================================
+
+TCB_REWRITE_SYSTEM = (
+        "You rewrite factual documents while preserving their meaning exactly. "
+        "Only change tone, register, and rhetorical framing. Do not add, remove, "
+        "or alter factual claims."
+)
+
+TCB_REWRITE_USER = """\
+Original document:
+{content}
+
+Target tone: {tone}
+
+Rewrite the document so that the meaning is preserved but the tone matches
+the target tone. Return strict JSON with:
+{{
+    "rewritten_content": "...",
+    "meaning_preserved": true,
+    "tone": "{tone}"
+}}
+"""
+
+
+# ======================================================================
 # Helpers
 # ======================================================================
 

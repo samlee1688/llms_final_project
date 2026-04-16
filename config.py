@@ -14,10 +14,17 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# Default models used as the *judge / generator* backbone
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+# Default models for agents and judges.
+# Agents may use a shared backbone; judges are set to the paper's target
+# models by default and can be overridden via environment variables.
+AGENT_PROVIDER = os.getenv("AGENT_PROVIDER", "openai")
+AGENT_MODEL = os.getenv("AGENT_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6-20250415")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 
 # ---------------------------------------------------------------------------
 # MADAM-RAG debate settings
