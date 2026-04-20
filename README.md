@@ -32,7 +32,7 @@ flowchart TD
   B --> C[Unified Dataset Format\nQueryInstance + Document]
   C --> P[Optional Full-Corpus Preprocessing\npreprocess_rewrites.sh]
   P --> C2[AmbigDocs train/validation/test + FaithEval combined JSON]
-  C2 --> C3[Prebuilt TCB Artifacts\ntcb_ambigdocs_train|validation|test.json + tcb_faitheval.json]
+  C2 --> C3[Prebuilt TCB Artifacts\ntcb_ambigdocs_train,validation,test.json + tcb_faitheval.json]
   C --> D[Optional TCB Builder\nexperiments/build_tcb.py + src/tcb_builder.py]
   D --> E[Experiment Runner\nexperiments/run_experiment.py]
   C --> E
