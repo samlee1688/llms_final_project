@@ -32,8 +32,8 @@ clearly, then briefly explain your reasoning."""
 MADAM_AGENT_SYSTEM = (
     "You are an expert analyst assigned to a specific document. Your role "
     "is to carefully analyse the document and argue for the answer it "
-    "supports. Be thorough and use direct evidence from the document to "
-    "support your position."
+    "supports. Use direct evidence from the document to support your "
+    "position. Be concise and avoid repetition."
 )
 
 MADAM_AGENT_INITIAL_USER = """\
@@ -46,7 +46,11 @@ Source: {source}
 Question: {question}
 
 Based on this document, provide your answer to the question. Support your \
-answer with specific evidence from the document."""
+answer with specific evidence from the document.
+
+Keep the response under 120 words using exactly:
+Claim: <one sentence>
+Evidence: <1-2 short citations or paraphrases>"""
 
 # ======================================================================
 # MADAM-RAG  –  Debate rounds
@@ -59,7 +63,7 @@ MADAM_DEBATE_SYSTEM = (
     "different documents. Consider their arguments carefully, but continue "
     "to defend your position if your document's evidence is strong. You "
     "may update your answer only if the opposing evidence is clearly more "
-    "compelling."
+    "compelling. Keep output concise and evidence-centered."
 )
 
 MADAM_DEBATE_USER = """\
@@ -79,7 +83,12 @@ Question: {question}
 
 Provide your updated position. If you change your answer, explain why the \
 other evidence was more compelling. If you maintain your answer, explain \
-why your document's evidence is stronger."""
+why your document's evidence is stronger.
+
+Keep the response under 120 words using exactly:
+Claim: <one sentence>
+Update: <changed|unchanged + short reason>
+Evidence: <1-2 short citations or paraphrases>"""
 
 # ======================================================================
 # MADAM-RAG  –  Aggregator / Judge
@@ -90,7 +99,7 @@ MADAM_AGGREGATOR_SYSTEM = (
     "question, each drawing on a different source document. Your task is "
     "to review their final arguments and determine the best-supported "
     "answer. Base your decision on the strength of the evidence presented, "
-    "not on the style or confidence of the arguments."
+    "not on the style or confidence of the arguments. Keep your rationale brief."
 )
 
 MADAM_AGGREGATOR_USER = """\
@@ -103,7 +112,7 @@ of debate:
 
 Based on the arguments above, determine the best-supported answer. First \
 state your answer clearly, then briefly explain which evidence was most \
-convincing and why."""
+convincing and why in at most 80 words."""
 
 
 # ======================================================================
@@ -144,7 +153,7 @@ Return strict JSON with this schema:
             "credibility_tier": "high|medium|low|unknown",
             "agent_claim": "...",
             "span_checks": [
-                                {"span": "...", "label": "supports|weak|contradicts"}
+                        {{"span": "...", "label": "supports|weak|contradicts"}}
             ],
             "document_support_assessment": "strong_support|mixed|weak_support|contradicted",
                     "cross_document_consistency": "consistent|partially_consistent|inconsistent",
@@ -161,7 +170,7 @@ EAJP_FINAL_SYSTEM = (
     "full analyst arguments. Decide which analyst has the best-supported "
     "answer. Ignore confidence and rhetoric. Favor verifiable evidence. If "
     "the final verdict conflicts with the evidence scorecard, the scorecard "
-    "verdict must be privileged."
+    "verdict must be privileged. Keep justification concise."
 )
 
 EAJP_FINAL_USER = """\
@@ -190,9 +199,21 @@ Return strict JSON:
 # ======================================================================
 
 TCB_REWRITE_SYSTEM = (
-        "You rewrite factual documents while preserving their meaning exactly. "
-        "Only change tone, register, and rhetorical framing. Do not add, remove, "
-        "or alter factual claims."
+    "You are a controlled rewriting engine for factual documents. "
+    "Your job is to preserve meaning exactly while changing only rhetorical tone. "
+    "You may adjust style, hedging strength, sentence structure, and register, but "
+    "you must not add, remove, reorder, or alter factual claims, entities, "
+    "relationships, chronology, or numeric values. "
+    "Preserve all named entities, quantities, dates, percentages, measurements, "
+    "and explicit comparisons. "
+    "Do not introduce new evidence, conclusions, or speculation. "
+    "Before finalizing, perform an internal lexical sanity check to verify: "
+    "(1) all factual claims in the source remain present, "
+    "(2) all numeric and named details are unchanged, "
+    "(3) no source content is omitted, "
+    "(4) only tone or rhetorical framing changed. "
+    "If exact preservation cannot be guaranteed, return a minimally edited rewrite "
+    "that keeps all source facts intact."
 )
 
 TCB_REWRITE_USER = """\
@@ -201,12 +222,32 @@ Original document:
 
 Target tone: {tone}
 
-Rewrite the document so that the meaning is preserved but the tone matches
-the target tone. Return strict JSON with:
+Rewrite instructions:
+1. Preserve factual meaning exactly.
+2. Keep all entities, numbers, dates, and factual relations unchanged.
+3. Do not add new claims, remove claims, or merge or split claims in ways
+   that lose information.
+4. Change only tone, register, and rhetorical framing.
+5. Keep output close in informational content and coverage to the original.
+
+Self-check before returning:
+- All factual claims from the original are still present.
+- No numeric value, named entity, date, or unit was changed.
+- No claim was dropped or newly introduced.
+- Tone now matches target tone: {tone}.
+
+Return strict JSON with:
 {{
     "rewritten_content": "...",
     "meaning_preserved": true,
-    "tone": "{tone}"
+    "tone": "{tone}",
+    "preservation_checks": {{
+        "all_claims_retained": true,
+        "numeric_data_unchanged": true,
+        "entities_unchanged": true,
+        "no_new_claims_added": true,
+        "no_claims_removed": true
+    }}
 }}
 """
 

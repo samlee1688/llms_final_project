@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import logging
 import os
 import sys
@@ -27,6 +28,46 @@ from src.data_loader import Document, QueryInstance, save_dataset
 logger = logging.getLogger(__name__)
 
 HF_DATASET_NAME = "yoonsanglee/AmbigDocs"
+
+
+def _split_file(split: str) -> str:
+    mapping = {
+        "train": "train.json",
+        "validation": "dev.json",
+        "test": "test.json",
+    }
+    return mapping[split]
+
+
+def _load_split_rows(split: str) -> list[dict[str, Any]]:
+    """Load AmbigDocs rows for a split.
+
+    Preferred path is `datasets.load_dataset`; if that fails due upstream
+    schema incompatibilities, fall back to downloading the split JSON file
+    directly from the dataset repo.
+    """
+    datasets_mod = importlib.import_module("datasets")
+    try:
+        raw = datasets_mod.load_dataset(HF_DATASET_NAME, split=split)
+        return [dict(row) for row in raw]
+    except Exception as exc:
+        logger.warning(
+            "datasets.load_dataset failed (%s). Falling back to direct JSON download.",
+            exc,
+        )
+
+    hf_hub = importlib.import_module("huggingface_hub")
+    split_path = hf_hub.hf_hub_download(
+        repo_id=HF_DATASET_NAME,
+        filename=_split_file(split),
+        repo_type="dataset",
+    )
+    with open(split_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    if not isinstance(payload, list):
+        raise ValueError(f"Unexpected AmbigDocs payload type: {type(payload).__name__}")
+    return [dict(row) for row in payload]
 
 
 def parse_args() -> argparse.Namespace:
@@ -116,11 +157,10 @@ def main() -> None:
     )
 
     logger.info("Loading %s split=%s", HF_DATASET_NAME, args.split)
-    datasets_mod = importlib.import_module("datasets")
-    raw = datasets_mod.load_dataset(HF_DATASET_NAME, split=args.split)
+    raw_rows = _load_split_rows(args.split)
 
     instances: list[QueryInstance] = []
-    for i, example in enumerate(raw):
+    for i, example in enumerate(raw_rows):
         if args.limit is not None and i >= args.limit:
             break
         item = dict(example)
