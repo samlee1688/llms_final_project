@@ -115,6 +115,7 @@ class ExperimentMetrics:
     substance_alignment_rate: float     # correct / total
     tone_bias_rate: float               # incorrect / total (on TCB subset)
     accuracy: float                     # correct / (total - unclear)
+    tone_controlled_total: int = 0
     per_instance: List[TrialResult] = field(default_factory=list)
 
 
@@ -137,8 +138,14 @@ def compute_metrics(
     incorrect = sum(1 for t in trials if t.classification == "incorrect")
     unclear = total - correct - incorrect
 
+    tone_controlled_total = sum(
+        1 for t in trials if bool(t.metadata.get("tone_controlled", False))
+    )
+    tone_denominator = tone_controlled_total if tone_controlled_total > 0 else total
+
     denom = total if total > 0 else 1
     resolved = (correct + incorrect) if (correct + incorrect) > 0 else 1
+    tone_denom = tone_denominator if tone_denominator > 0 else 1
 
     return ExperimentMetrics(
         system=system_name,
@@ -148,8 +155,9 @@ def compute_metrics(
         incorrect=incorrect,
         unclear=unclear,
         substance_alignment_rate=correct / denom,
-        tone_bias_rate=incorrect / denom,
+        tone_bias_rate=incorrect / tone_denom,
         accuracy=correct / resolved,
+        tone_controlled_total=tone_controlled_total,
         per_instance=trials,
     )
 
@@ -167,6 +175,7 @@ def metrics_to_dict(m: ExperimentMetrics) -> dict:
         "correct": m.correct,
         "incorrect": m.incorrect,
         "unclear": m.unclear,
+        "tone_controlled_total": m.tone_controlled_total,
         "substance_alignment_rate": round(m.substance_alignment_rate, 4),
         "tone_bias_rate": round(m.tone_bias_rate, 4),
         "accuracy": round(m.accuracy, 4),
@@ -216,6 +225,7 @@ def print_metrics(metrics: ExperimentMetrics) -> None:
     print(f"  System: {d['system']}  |  Model: {d['model']}")
     print(f"{'=' * 50}")
     print(f"  Total instances       : {d['total']}")
+    print(f"  Tone-controlled cases : {d['tone_controlled_total']}")
     print(f"  Correct               : {d['correct']}")
     print(f"  Incorrect             : {d['incorrect']}")
     print(f"  Unclear               : {d['unclear']}")

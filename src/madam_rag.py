@@ -17,14 +17,23 @@ Implements the debate framework described by Wang et al.:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import logging
 from dataclasses import dataclass, field
+import json
+import os
+import re
+import time
 from typing import Any, Dict, List, Optional
 
 import config
 from src.data_loader import Document, QueryInstance
 from src.models import LLMClient, LLMResponse
 from src.prompts import (
+    EAJP_FINAL_SYSTEM,
+    EAJP_FINAL_USER,
+    EAJP_SCORECARD_SYSTEM,
+    EAJP_SCORECARD_USER,
     MADAM_AGENT_SYSTEM,
     MADAM_AGENT_INITIAL_USER,
     MADAM_DEBATE_SYSTEM,
@@ -35,6 +44,28 @@ from src.prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _norm_claim(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _clip(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    s = (text or "").strip()
+    if len(s) <= limit:
+        return s
+    return s[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _sum_usage(rows: List[dict]) -> dict:
+    merged: dict[str, float] = {}
+    for row in rows:
+        for k, v in (row or {}).items():
+            if isinstance(v, (int, float)):
+                merged[k] = float(merged.get(k, 0.0)) + float(v)
+    return merged
 
 
 # -----------------------------------------------------------------------
@@ -72,6 +103,20 @@ class MadamRAGOutput:
     model: str = ""
     usage: dict = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class EvidenceScoreEntry:
+    """Structured evidence score for one agent-document pair."""
+
+    agent_id: str
+    document_id: str
+    credibility_tier: str
+    agent_claim: str
+    span_checks: List[Dict[str, str]] = field(default_factory=list)
+    document_support_assessment: str = "mixed"
+    cross_document_consistency: str = "unknown"
+    notes: str = ""
 
 
 # -----------------------------------------------------------------------
@@ -119,13 +164,21 @@ class DocumentAgent:
         question: str,
         round_num: int,
         other_arguments: Dict[str, str],
+        include_full_document: bool,
+        compact_doc_chars: int,
     ) -> AgentResponse:
         """Produce an updated argument after seeing the other agents."""
         formatted_others = format_other_arguments(other_arguments, self.agent_id)
+        if include_full_document:
+            doc_context = self.document.content
+        else:
+            # After round 0, compact to an excerpt to avoid repeatedly paying
+            # for full-document prompt tokens every debate turn.
+            doc_context = _clip(self.document.content, compact_doc_chars)
         user_prompt = MADAM_DEBATE_USER.format(
             doc_id=self.agent_id,
             source=self.document.source or "Unknown",
-            content=self.document.content,
+            content=doc_context,
             previous_argument=self.latest_response.text if self.latest_response else "",
             other_arguments=formatted_others,
             question=question,
@@ -158,6 +211,8 @@ class Aggregator:
         question: str,
         final_arguments: Dict[str, str],
         num_rounds: int,
+        documents: Optional[List[Document]] = None,
+        agent_claims: Optional[Dict[str, str]] = None,
     ) -> LLMResponse:
         formatted = "\n\n".join(
             f"[Analyst {aid}]:\n{arg}" for aid, arg in final_arguments.items()
@@ -168,6 +223,231 @@ class Aggregator:
             final_arguments=formatted,
         )
         return self.llm.generate(MADAM_AGGREGATOR_SYSTEM, user_prompt)
+
+
+def _extract_json_block(text: str) -> Dict[str, Any]:
+    """Best-effort JSON extraction from model output."""
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return {}
+    try:
+        return json.loads(match.group(0))
+    except Exception:
+        return {}
+
+
+def _claim_from_text(text: str) -> str:
+    """Extract a concise claim from an agent response."""
+    if not text.strip():
+        return ""
+    first_line = text.strip().splitlines()[0].strip()
+    return first_line[:240]
+
+
+class EvidenceAnchoredAggregator(Aggregator):
+    """EAJP judge that scores evidence before reading debate arguments."""
+
+    def __init__(
+        self,
+        llm: LLMClient,
+        privilege_scorecard: bool = True,
+        compact_doc_chars: int = 1000,
+        short_circuit_on_confident_scorecard: bool = True,
+    ):
+        super().__init__(llm)
+        self.privilege_scorecard = privilege_scorecard
+        self.compact_doc_chars = max(200, compact_doc_chars)
+        self.short_circuit_on_confident_scorecard = short_circuit_on_confident_scorecard
+
+    def _build_evidence_bundle(
+        self,
+        documents: List[Document],
+        agent_claims: Dict[str, str],
+    ) -> str:
+        parts: List[str] = []
+        for i, doc in enumerate(documents):
+            agent_id = doc.id or f"doc_{i + 1}"
+            parts.append(
+                "\n".join(
+                    [
+                        f"[Analyst {agent_id}]",
+                        f"Document ID: {doc.id or agent_id}",
+                        f"Source: {doc.source or 'Unknown'}",
+                        f"Credibility tier: {doc.credibility or 'unknown'}",
+                        f"Agent claim: {agent_claims.get(agent_id, '') or '(not provided)'}",
+                        "Document excerpt:",
+                        _clip(doc.content, self.compact_doc_chars),
+                    ]
+                )
+            )
+        return "\n\n".join(parts)
+
+    def _confident_preliminary(self, entries: List[EvidenceScoreEntry], winner_id: str) -> bool:
+        if not winner_id or not entries:
+            return False
+        lookup = {e.agent_id: e for e in entries}
+        winner = lookup.get(winner_id)
+        if winner is None:
+            return False
+        if winner.document_support_assessment not in {"strong_support", "mixed"}:
+            return False
+        weak_others = 0
+        for e in entries:
+            if e.agent_id == winner_id:
+                continue
+            if e.document_support_assessment in {"weak_support", "contradicted"}:
+                weak_others += 1
+        return weak_others >= max(1, len(entries) - 1)
+
+    def aggregate(
+        self,
+        question: str,
+        final_arguments: Dict[str, str],
+        num_rounds: int,
+        documents: Optional[List[Document]] = None,
+        agent_claims: Optional[Dict[str, str]] = None,
+    ) -> LLMResponse:
+        documents = documents or []
+        claims = agent_claims or {
+            aid: _claim_from_text(arg) for aid, arg in final_arguments.items()
+        }
+
+        scorecard_bundle = self._build_evidence_bundle(documents, claims)
+        scorecard_prompt = EAJP_SCORECARD_USER.format(
+            question=question,
+            evidence_bundle=scorecard_bundle,
+        )
+        scorecard_resp = self.llm.generate(EAJP_SCORECARD_SYSTEM, scorecard_prompt)
+        scorecard_data = _extract_json_block(scorecard_resp.text)
+
+        scorecard_entries = scorecard_data.get("scorecard", [])
+        typed_entries: List[EvidenceScoreEntry] = []
+        for entry in scorecard_entries:
+            typed_entries.append(
+                EvidenceScoreEntry(
+                    agent_id=str(entry.get("agent_id", "")),
+                    document_id=str(entry.get("document_id", "")),
+                    credibility_tier=str(entry.get("credibility_tier", "unknown")),
+                    agent_claim=str(entry.get("agent_claim", "")),
+                    span_checks=list(entry.get("span_checks", [])),
+                    document_support_assessment=str(
+                        entry.get("document_support_assessment", "mixed")
+                    ),
+                    cross_document_consistency=str(
+                        entry.get("cross_document_consistency", "unknown")
+                    ),
+                    notes=str(entry.get("notes", "")),
+                )
+            )
+        scorecard_lookup = {
+            entry.agent_id: entry for entry in typed_entries
+        }
+        preliminary_winner = str(scorecard_data.get("preliminary_winner_id", "")).strip()
+        preliminary_verdict = str(scorecard_data.get("preliminary_verdict", "")).strip()
+
+        scorecard_struct = {
+            "scorecard": [
+                {
+                    "agent_id": e.agent_id,
+                    "document_id": e.document_id,
+                    "credibility_tier": e.credibility_tier,
+                    "agent_claim": e.agent_claim,
+                    "span_checks": e.span_checks,
+                    "document_support_assessment": e.document_support_assessment,
+                    "cross_document_consistency": e.cross_document_consistency,
+                    "notes": e.notes,
+                }
+                for e in typed_entries
+            ],
+            "preliminary_winner_id": preliminary_winner,
+            "preliminary_verdict": preliminary_verdict,
+        }
+
+        if self.short_circuit_on_confident_scorecard and self._confident_preliminary(typed_entries, preliminary_winner):
+            winner_entry = scorecard_lookup.get(preliminary_winner)
+            chosen_claim = (
+                claims.get(preliminary_winner)
+                or (winner_entry.agent_claim if winner_entry is not None else "")
+                or _claim_from_text(final_arguments.get(preliminary_winner, ""))
+            )
+            return LLMResponse(
+                text=f"{chosen_claim}\n\n{preliminary_verdict}".strip(),
+                model=scorecard_resp.model,
+                usage=dict(scorecard_resp.usage or {}),
+                metadata={
+                    "judge_mode": "eajp",
+                    "scorecard": scorecard_struct,
+                    "short_circuit_used": True,
+                    "scorecard_privilege_applied": False,
+                    "final_winner_id": preliminary_winner,
+                    "final_verdict": preliminary_verdict,
+                },
+            )
+
+        scorecard_json = json.dumps(scorecard_struct, indent=2)
+        final_prompt = EAJP_FINAL_USER.format(
+            question=question,
+            scorecard_json=scorecard_json,
+            final_arguments="\n\n".join(
+                f"[Analyst {aid}]:\n{arg}" for aid, arg in final_arguments.items()
+            ),
+        )
+        final_resp = self.llm.generate(EAJP_FINAL_SYSTEM, final_prompt)
+        final_data = _extract_json_block(final_resp.text)
+        final_winner = str(final_data.get("final_winner_id", "")).strip()
+        final_answer = str(final_data.get("final_answer", "")).strip()
+        final_verdict = str(final_data.get("final_verdict", "")).strip()
+
+        privilege_applied = False
+        if self.privilege_scorecard and preliminary_winner:
+            if final_winner and final_winner != preliminary_winner:
+                privilege_applied = True
+                final_winner = preliminary_winner
+            elif not final_winner:
+                privilege_applied = True
+                final_winner = preliminary_winner
+
+        if not final_winner and final_arguments:
+            final_winner = next(iter(final_arguments.keys()))
+
+        chosen_claim = (
+            claims.get(final_winner)
+            or ((scorecard_lookup.get(final_winner).agent_claim) if scorecard_lookup.get(final_winner) else "")
+            or final_answer
+            or _claim_from_text(final_arguments.get(final_winner, ""))
+        )
+
+        reasoning = final_verdict or str(scorecard_data.get("preliminary_verdict", ""))
+        if self.privilege_scorecard and preliminary_winner and final_data.get("final_winner_id"):
+            if str(final_data.get("final_winner_id", "")).strip() != preliminary_winner:
+                reasoning = (
+                    reasoning
+                    + "\n\nEAJP rule: final verdict was checked against the scorecard and "
+                    + "the scorecard verdict was privileged when they conflicted."
+                )
+
+        merged_usage = {}
+        merged_usage.update(scorecard_resp.usage or {})
+        for key, value in (final_resp.usage or {}).items():
+            merged_usage[f"final_{key}"] = value
+
+        return LLMResponse(
+            text=f"{chosen_claim}\n\n{reasoning}".strip(),
+            model=final_resp.model,
+            usage=merged_usage,
+            metadata={
+                "judge_mode": "eajp",
+                "scorecard": scorecard_struct,
+                "short_circuit_used": False,
+                "scorecard_privilege_applied": privilege_applied,
+                "final_winner_id": final_winner,
+                "final_verdict": final_verdict,
+            },
+        )
 
 
 # -----------------------------------------------------------------------
@@ -194,10 +474,30 @@ class MadamRAG:
         agent_llm: LLMClient,
         judge_llm: Optional[LLMClient] = None,
         num_rounds: Optional[int] = None,
+        judge: Optional[Aggregator] = None,
+        max_parallel_agents: Optional[int] = None,
+        compact_doc_chars: int = 1200,
+        argument_summary_chars: int = 240,
+        early_stop_patience: int = 1,
+        include_full_document_in_debate: bool = False,
     ):
         self.agent_llm = agent_llm
         self.judge_llm = judge_llm or agent_llm
         self.num_rounds = num_rounds if num_rounds is not None else config.DEBATE_ROUNDS
+        self.judge = judge or Aggregator(self.judge_llm)
+        if max_parallel_agents is None:
+            max_parallel_agents = int(os.getenv("MADAM_MAX_AGENT_PARALLEL", "4"))
+        self.max_parallel_agents = max(1, max_parallel_agents)
+        self.compact_doc_chars = max(300, compact_doc_chars)
+        self.argument_summary_chars = max(80, argument_summary_chars)
+        self.early_stop_patience = max(0, early_stop_patience)
+        self.include_full_document_in_debate = include_full_document_in_debate
+
+    def _summarize_arguments(self, responses: Dict[str, str]) -> Dict[str, str]:
+        return {
+            aid: _clip(_claim_from_text(text) or text, self.argument_summary_chars)
+            for aid, text in responses.items()
+        }
 
     # ----- single instance ----------------------------------------------
 
@@ -215,6 +515,7 @@ class MadamRAG:
         documents:
             Optional override for the documents to use.
         """
+        t0 = time.perf_counter()
         docs = documents if documents is not None else instance.documents
         question = instance.question
 
@@ -232,39 +533,96 @@ class MadamRAG:
             instance.id, len(agents),
         )
         round_0: List[AgentResponse] = []
-        for agent in agents:
-            resp = agent.generate_initial(question)
-            round_0.append(resp)
-            logger.debug(
-                "  Agent %s initial answer (first 120 chars): %s",
-                agent.agent_id, resp.text[:120],
-            )
+        if len(agents) <= 1 or self.max_parallel_agents <= 1:
+            for agent in agents:
+                resp = agent.generate_initial(question)
+                round_0.append(resp)
+                logger.debug(
+                    "  Agent %s initial answer (first 120 chars): %s",
+                    agent.agent_id, resp.text[:120],
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=min(self.max_parallel_agents, len(agents))) as pool:
+                responses = list(pool.map(lambda a: a.generate_initial(question), agents))
+            round_0.extend(responses)
         debate_history.rounds.append(round_0)
 
         # 3. Debate rounds
+        stable_rounds = 0
+        prev_consensus_claim = None
+        early_stop_triggered = False
         for r in range(1, self.num_rounds + 1):
             logger.info("MADAM-RAG [%s] – debate round %d/%d", instance.id, r, self.num_rounds)
             # Collect latest responses from all agents
             current_responses: Dict[str, str] = {
                 a.agent_id: a.latest_response.text for a in agents
             }
+            summarized_responses = self._summarize_arguments(current_responses)
             round_r: List[AgentResponse] = []
-            for agent in agents:
-                resp = agent.generate_debate(question, r, current_responses)
-                round_r.append(resp)
-                logger.debug(
-                    "  Agent %s round-%d (first 120 chars): %s",
-                    agent.agent_id, r, resp.text[:120],
-                )
+            if len(agents) <= 1 or self.max_parallel_agents <= 1:
+                for agent in agents:
+                    resp = agent.generate_debate(
+                        question,
+                        r,
+                        summarized_responses,
+                        include_full_document=self.include_full_document_in_debate,
+                        compact_doc_chars=self.compact_doc_chars,
+                    )
+                    round_r.append(resp)
+                    logger.debug(
+                        "  Agent %s round-%d (first 120 chars): %s",
+                        agent.agent_id, r, resp.text[:120],
+                    )
+            else:
+                with ThreadPoolExecutor(max_workers=min(self.max_parallel_agents, len(agents))) as pool:
+                    responses = list(
+                        pool.map(
+                            lambda a: a.generate_debate(
+                                question,
+                                r,
+                                summarized_responses,
+                                include_full_document=self.include_full_document_in_debate,
+                                compact_doc_chars=self.compact_doc_chars,
+                            ),
+                            agents,
+                        )
+                    )
+                round_r.extend(responses)
             debate_history.rounds.append(round_r)
+
+            consensus_claims = {_norm_claim(_claim_from_text(a.latest_response.text)) for a in agents}
+            consensus_claim = next(iter(consensus_claims)) if len(consensus_claims) == 1 else None
+            if consensus_claim and consensus_claim == prev_consensus_claim:
+                stable_rounds += 1
+            else:
+                stable_rounds = 0
+            prev_consensus_claim = consensus_claim
+            if consensus_claim and stable_rounds >= self.early_stop_patience:
+                early_stop_triggered = True
+                logger.info("MADAM-RAG [%s] – early stop at round %d (stable consensus)", instance.id, r)
+                break
 
         # 4. Aggregation
         logger.info("MADAM-RAG [%s] – aggregating", instance.id)
         final_args: Dict[str, str] = {
             a.agent_id: a.latest_response.text for a in agents
         }
-        aggregator = Aggregator(self.judge_llm)
-        judge_resp = aggregator.aggregate(question, final_args, self.num_rounds)
+        agent_claims: Dict[str, str] = {
+            a.agent_id: _claim_from_text(a.responses[0].text if a.responses else "")
+            for a in agents
+        }
+        judge_resp = self.judge.aggregate(
+            question,
+            final_args,
+            max(0, len(debate_history.rounds) - 1),
+            documents=docs,
+            agent_claims=agent_claims,
+        )
+
+        all_agent_usage = [resp.usage for rnd in debate_history.rounds for resp in rnd]
+        total_usage = _sum_usage(all_agent_usage + [judge_resp.usage or {}])
+        elapsed = time.perf_counter() - t0
+        rounds_executed = max(0, len(debate_history.rounds) - 1)
 
         return MadamRAGOutput(
             query_id=instance.id,
@@ -272,7 +630,18 @@ class MadamRAG:
             judge_reasoning=judge_resp.text,
             debate_history=debate_history,
             model=judge_resp.model,
-            usage=judge_resp.usage,
+            usage=total_usage,
+            metadata={
+                "runtime_seconds": round(elapsed, 4),
+                "rounds_configured": self.num_rounds,
+                "rounds_executed": rounds_executed,
+                "early_stop_triggered": early_stop_triggered,
+                "num_agents": len(agents),
+                "agent_calls": len(all_agent_usage),
+                "judge_calls": 1,
+                "parallel_agent_workers": min(self.max_parallel_agents, max(1, len(agents))),
+                "judge_metadata": dict(getattr(judge_resp, "metadata", {}) or {}),
+            },
         )
 
     # ----- batch --------------------------------------------------------

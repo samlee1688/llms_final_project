@@ -182,3 +182,25 @@ def load_faitheval(
             before,
         )
     return instances
+
+
+def load_tcb(path: str) -> List[QueryInstance]:
+    """Load a Tone-Controlled Benchmark (TCB) dataset.
+
+    TCB is treated as a standard dataset file with tone-controlled
+    instances already encoded in the JSON. The loader is a named alias to
+    make experiment code self-documenting.
+    """
+    return load_dataset(path)
+
+
+def load_benchmark(path: str, benchmark: str) -> List[QueryInstance]:
+    """Load one of the supported benchmark families by name."""
+    benchmark = benchmark.lower()
+    if benchmark == "ambigdocs":
+        return load_ambigdocs(path)
+    if benchmark == "faitheval":
+        return load_faitheval(path, require_correct_doc=True)
+    if benchmark == "tcb":
+        return load_tcb(path)
+    return load_dataset(path)
