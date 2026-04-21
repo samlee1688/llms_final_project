@@ -28,68 +28,36 @@ evidence setting [2].
 
 ```mermaid
 flowchart TD
-   A[Source Benchmarks\nAmbigDocs / FaithEval / Custom JSON] --> B[Data Converters\nexperiments/convert_*.py]
-  B --> C[Unified Dataset Format\nQueryInstance + Document]
-  C --> P[Optional Full-Corpus Preprocessing\npreprocess_rewrites.sh]
-  P --> C2[AmbigDocs train/validation/test + FaithEval combined JSON]
-  C2 --> C3[Prebuilt TCB Artifacts\ntcb_ambigdocs_train,validation,test.json + tcb_faitheval.json]
-  C --> D[Optional TCB Builder\nexperiments/build_tcb.py + src/tcb_builder.py]
-  D --> E[Experiment Runner\nexperiments/run_experiment.py]
+  A[Source Benchmarks] --> B[Data Converters]
+  B --> C[Unified Dataset]
+  C --> P[Optional Preprocessing]
+  P --> C2[Prebuilt TCB Artifacts]
+  C --> D[Optional TCB Builder]
+  D --> E[Experiment Runner]
   C --> E
-  C3 --> E
+  C2 --> E
 
-   subgraph S1[Systems]
-    F1[Standard RAG\nsrc/standard_rag.py]
-    F2[MADAM-RAG\nsrc/madam_rag.py]
-    F3[EAJP\nEvidenceAnchoredAggregator]
-   end
+  E --> F1[Standard RAG]
+  E --> F2[MADAM RAG]
+  E --> F3[EAJP]
 
-   E --> F1
-   E --> F2
-   E --> F3
+  F3 --> J1[Scorecard Phase]
+  J1 --> J2[Final Judgment Phase]
+  J2 --> J3{Conflict With Preliminary Winner}
+  J3 -->|Yes| J4[Privilege Scorecard Winner]
+  J3 -->|No| J5[Keep Final Winner]
+  J4 --> J6[Persist Judge Metadata]
+  J5 --> J6
 
-     subgraph S1b[EAJP Judge Decision Flow]
-    J1[Scorecard phase
-  credibility tier + span_checks + preliminary evidence-only winner]
-    J2[Final phase
-  read full debate arguments + scorecard]
-    J3{Final winner conflicts
-  with preliminary winner?}
-    J4[Privilege scorecard winner]
-    J5[Persist judge_metadata
-  scorecard + prelim/final verdict fields]
-     end
-
-     F3 --> J1 --> J2 --> J3
-     J3 -- yes --> J4 --> J5
-     J3 -- no --> J5
-     J5 --> H1
-
-   subgraph S2[Judge Suites]
-    G1[OpenAI Judge\nconfig.OPENAI_MODEL default gpt-5.2]
-    G2[Anthropic Judge\nconfig.ANTHROPIC_MODEL default claude-haiku-4-5-20251001]
-    G3[Both Suites]
-   end
-
-   F2 --> G1
-   F2 --> G2
-   F3 --> G1
-   F3 --> G2
-   E --> G3
-
-   subgraph S3[Evaluation]
-    H1[classify_answer]
-    H2[compute_metrics\nSAR / TBR / accuracy]
-    H3[save_results\n*_metrics.json + *_details.json]
-    H4[validate_eajp_schema.py\noptional post-run EAJP schema checks]
-    H5[compute_proposal_metrics.py\noptional post-run proposal metrics]
-    H6[benchmark_summary.json\naggregated run summary]
-   end
-
-   F1 --> H1
-   F2 --> H1
-   F3 --> H1
-    H1 --> H2 --> H3 --> H4 --> H5 --> H6
+  F1 --> H1[Classify Answer]
+  F2 --> H1
+  F3 --> H1
+  J6 --> H1
+  H1 --> H2[Compute Metrics]
+  H2 --> H3[Save Metrics And Details]
+  H3 --> H4[Optional Schema Validation]
+  H4 --> H5[Optional Proposal Metrics]
+  H5 --> H6[Benchmark Summary]
 ```
 
 ## Implemented Systems
@@ -833,43 +801,26 @@ and token spend for MADAM-RAG and EAJP while preserving behavior.
 
 ```mermaid
 flowchart TD
-  A[Dataset Loader] --> B[Runner: experiments/run_experiment.py]
-  B --> C[standard_rag]
-  B --> D[madam_rag]
-  B --> E[eajp]
+  A[Dataset Loader] --> B[Runner]
+  B --> C[Standard RAG]
+  B --> D[MADAM RAG]
+  B --> E[EAJP]
 
-  subgraph O[Optimization Layer]
-    O1[Agent Parallelism]
-    O2[Prompt Compaction]
-    O3[Early Stop]
-    O4[EAJP Short-Circuit]
-    O5[Judge On Contention]
-  end
+  D --> O1[Agent Parallelism]
+  D --> O2[Prompt Compaction]
+  D --> O3[Early Stop]
+  E --> O4[EAJP Short Circuit]
+  E --> O5[Judge On Contention]
 
-  D --> O
-  E --> O
+  C --> M1[Runtime Cache]
+  D --> M2[Retry And Backoff]
+  E --> M3[Rate Limiter]
+  E --> M4[Provider Cache Hints]
 
-  subgraph M[LLM Runtime]
-    M1[SQLite Cache]
-    M2[Retry + Backoff]
-    M3[Rate Limiter]
-    M4[Provider Prompt Cache Hints]
-  end
-
-  C --> M
-  D --> M
-  E --> M
-
-  subgraph T[Telemetry + Outputs]
-    T1[per-instance runtime/tokens]
-    T2[*_details.json]
-    T3[*_metrics.json]
-    T4[*_partial.jsonl resume checkpoints]
-  end
-
-  C --> T
-  D --> T
-  E --> T
+  C --> T1[Runtime And Token Telemetry]
+  D --> T2[Details Output]
+  E --> T3[Metrics Output]
+  E --> T4[Resume Checkpoints]
 ```
 
 ## CLI Flags Reference
