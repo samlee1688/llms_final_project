@@ -18,8 +18,7 @@ LLM_BACKOFF_BASE_SECONDS="${LLM_BACKOFF_BASE_SECONDS:-1.5}" \
   --skip-install \
   --skip-build-datasets \
   --run-dataset-root data/sample200_gemini_preprocess \
-  --ambigdocs-split validation \
-  --faitheval-split test \
+  --ramdocs-split test \
   --output-root "$OUTPUT_ROOT" \
   --judge-suite both \
   --judge-rounds 3 \
@@ -32,8 +31,8 @@ LLM_BACKOFF_BASE_SECONDS="${LLM_BACKOFF_BASE_SECONDS:-1.5}" \
   --throttle-ms 200 \
   --resume \
   --madam-max-parallel-agents 4 \
-  --madam-compact-doc-chars 1200 \
-  --madam-argument-summary-chars 240 \
+  --madam-compact-doc-chars 10000 \
+  --madam-argument-summary-chars 1000 \
   --madam-early-stop-patience 1 \
   --judge-only-on-contention \
   --validate-eajp-schema \

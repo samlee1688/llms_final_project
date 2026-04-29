@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--input", required=True, help="Source benchmark JSON file.")
     p.add_argument(
         "--benchmark",
-        choices=["custom", "ambigdocs", "faitheval"],
+        choices=["custom", "ramdocs", "confact"],
         default="custom",
         help="Source benchmark family used for filtering.",
     )

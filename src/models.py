@@ -61,33 +61,53 @@ def _openai_should_swap_token_param(exc: Exception, used_param: str) -> bool:
 
 
 class _SQLiteLLMCache:
-    """Thread-safe SQLite-backed prompt/response cache."""
+    """Thread-safe SQLite-backed prompt/response cache.
+
+    Uses thread-local persistent connections with WAL journal mode so that
+    concurrent reads from worker threads do not block each other. Writes are
+    serialised with a single threading.Lock (WAL still requires exclusive
+    access during a write transaction).
+    """
 
     def __init__(self, path: str):
         self.path = path
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        self._lock = threading.Lock()
-        with sqlite3.connect(self.path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS llm_cache (
-                    cache_key TEXT PRIMARY KEY,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    response_text TEXT NOT NULL,
-                    usage_json TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-                """
+        self._write_lock = threading.Lock()
+        self._local = threading.local()
+        # Create schema on the calling (main) thread and stash the connection
+        # as this thread's thread-local connection so it is reused immediately.
+        conn = sqlite3.connect(self.path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS llm_cache (
+                cache_key TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                response_text TEXT NOT NULL,
+                usage_json TEXT NOT NULL,
+                created_at REAL NOT NULL
             )
-            conn.commit()
+            """
+        )
+        conn.commit()
+        self._local.conn = conn
+
+    def _get_conn(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self.path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._local.conn = conn
+        return conn
 
     def get(self, cache_key: str) -> Optional[LLMResponse]:
-        with self._lock, sqlite3.connect(self.path) as conn:
-            row = conn.execute(
-                "SELECT model, response_text, usage_json FROM llm_cache WHERE cache_key = ?",
-                (cache_key,),
-            ).fetchone()
+        row = self._get_conn().execute(
+            "SELECT model, response_text, usage_json FROM llm_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
         if row is None:
             return None
         model, response_text, usage_json = row
@@ -108,7 +128,8 @@ class _SQLiteLLMCache:
         usage: dict,
     ) -> None:
         payload = json.dumps(usage or {}, sort_keys=True)
-        with self._lock, sqlite3.connect(self.path) as conn:
+        with self._write_lock:
+            conn = self._get_conn()
             conn.execute(
                 """
                 INSERT OR REPLACE INTO llm_cache

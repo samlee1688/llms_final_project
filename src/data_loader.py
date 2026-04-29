@@ -2,8 +2,7 @@
 Data models and loaders for RAG tone-bias benchmarks.
 
 Supports loading from:
-  - AmbigDocs (ambiguous-interpretation QA pairs)
-  - FaithEval (faithfulness evaluation with contradictory docs)
+    - RAMDocs (retrieval-augmented conflicting evidence QA pairs)
   - Tone-Controlled Benchmark (TCB) derived from the above
 
 All loaders produce a uniform list of ``QueryInstance`` objects.
@@ -88,6 +87,11 @@ def _instance_from_dict(d: dict) -> QueryInstance:
     )
 
 
+def instance_from_dict(d: dict) -> QueryInstance:
+    """Deserialise a plain dict (e.g. from JSON) into a ``QueryInstance``."""
+    return _instance_from_dict(d)
+
+
 def instance_to_dict(qi: QueryInstance) -> dict:
     """Serialise a ``QueryInstance`` back to a plain dict (for JSON output)."""
     return {
@@ -150,38 +154,12 @@ def save_dataset(instances: List[QueryInstance], path: str) -> None:
 # Benchmark-specific loaders (thin wrappers for now)
 # -----------------------------------------------------------------------
 
-def load_ambigdocs(path: str) -> List[QueryInstance]:
-    """Load the AmbigDocs benchmark.
+def load_ramdocs(path: str) -> List[QueryInstance]:
+    """Load the RAMDocs benchmark.
 
-    Applies any AmbigDocs-specific normalisation on top of the generic
-    loader. Currently the generic format suffices.
+    RAMDocs is consumed in the same normalized JSON schema as other loaders.
     """
     return load_dataset(path)
-
-
-def load_faitheval(
-    path: str, require_correct_doc: bool = True
-) -> List[QueryInstance]:
-    """Load a FaithEval subset.
-
-    Parameters
-    ----------
-    require_correct_doc:
-        If *True* (default), filter to instances where at least one
-        document supports the correct answer — matching the paper's
-        requirement that the task is selecting the right claim, not
-        detecting its absence.
-    """
-    instances = load_dataset(path)
-    if require_correct_doc:
-        before = len(instances)
-        instances = [qi for qi in instances if qi.correct_documents]
-        logger.info(
-            "FaithEval: kept %d / %d instances with ≥1 correct document",
-            len(instances),
-            before,
-        )
-    return instances
 
 
 def load_tcb(path: str) -> List[QueryInstance]:
@@ -194,13 +172,18 @@ def load_tcb(path: str) -> List[QueryInstance]:
     return load_dataset(path)
 
 
+def load_confact(path: str) -> List[QueryInstance]:
+    """Load the ConfACT (HuMC) benchmark."""
+    return load_dataset(path)
+
+
 def load_benchmark(path: str, benchmark: str) -> List[QueryInstance]:
     """Load one of the supported benchmark families by name."""
     benchmark = benchmark.lower()
-    if benchmark == "ambigdocs":
-        return load_ambigdocs(path)
-    if benchmark == "faitheval":
-        return load_faitheval(path, require_correct_doc=True)
+    if benchmark == "ramdocs":
+        return load_ramdocs(path)
+    if benchmark in ("confact", "tcb_confact"):
+        return load_confact(path)
     if benchmark == "tcb":
         return load_tcb(path)
     return load_dataset(path)

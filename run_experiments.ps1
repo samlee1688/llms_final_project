@@ -2,12 +2,13 @@ param(
     [switch]$InstallDependencies = $true,
     [switch]$BuildDatasets = $true,
     [switch]$RunExperiments = $true,
-    [ValidateSet("validation", "test")]
-    [string]$AmbigDocsSplit = "validation",
-    [string]$FaithEvalSplit = "test",
+    [string]$RAMDocsSplit = "test",
     [ValidateSet("both", "openai", "anthropic")]
     [string]$JudgeSuite = "both",
+    [int]$JudgeRounds = 3,
+    [int]$MaxAblationRounds = 3,
     [string]$OutputRoot = "results\full_run",
+    [string]$DataRoot = "data\full",
     [string]$PythonExe = ""
 )
 
@@ -27,12 +28,8 @@ function Resolve-PythonExe {
     )
 
     foreach ($candidate in $candidates) {
-        if ($candidate -eq "python") {
-            return $candidate
-        }
-        if (Test-Path $candidate) {
-            return (Resolve-Path $candidate).Path
-        }
+        if ($candidate -eq "python") { return $candidate }
+        if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
     }
 
     return "python"
@@ -43,10 +40,10 @@ $python = Resolve-PythonExe -Preferred $PythonExe
 Write-Host "Using Python: $python"
 Write-Host "Project root: $projectRoot"
 
-$ambigdocsOut = Join-Path $projectRoot "data\ambigdocs_$AmbigDocsSplit.json"
-$faithevalOut = Join-Path $projectRoot "data\faitheval_combined.json"
-$tcbAmbigOut = Join-Path $projectRoot "data\tcb_ambigdocs.json"
-$tcbFaithOut = Join-Path $projectRoot "data\tcb_faitheval.json"
+$ramdocsOut      = Join-Path $projectRoot "$DataRoot\ramdocs_$RAMDocsSplit.json"
+$tcbRamdocsOut   = Join-Path $projectRoot "$DataRoot\tcb_ramdocs_$RAMDocsSplit.json"
+$confactSource   = Join-Path $projectRoot "$DataRoot\confact\humc_processed_cleaned_final.json"
+$tcbConfactOut   = Join-Path $projectRoot "$DataRoot\confact\tcb_humc_processed_cleaned_final.json"
 
 if ($InstallDependencies) {
     Write-Host "Installing dependencies..."
@@ -54,34 +51,46 @@ if ($InstallDependencies) {
 }
 
 if ($BuildDatasets) {
-    Write-Host "Converting AmbigDocs..."
-    & $python -m experiments.convert_ambigdocs --split $AmbigDocsSplit --output $ambigdocsOut
+    Write-Host "Converting RAMDocs..."
+    & $python -m experiments.convert_ramdocs --split $RAMDocsSplit --output $ramdocsOut
 
-    Write-Host "Converting FaithEval..."
-    & $python -m experiments.convert_faitheval --dataset-types counterfactual inconsistent --split $FaithEvalSplit --output $faithevalOut
+    Write-Host "Building TCB from RAMDocs..."
+    & $python -m experiments.build_tcb --input $ramdocsOut --benchmark ramdocs --output $tcbRamdocsOut
 
-    Write-Host "Building TCB from AmbigDocs..."
-    & $python -m experiments.build_tcb --input $ambigdocsOut --benchmark ambigdocs --output $tcbAmbigOut
-
-    Write-Host "Building TCB from FaithEval..."
-    & $python -m experiments.build_tcb --input $faithevalOut --benchmark faitheval --output $tcbFaithOut
+    Write-Host "Building ConfACT TCB (uses dedicated builder with Anthropic rewriter)..."
+    if (Test-Path $confactSource) {
+        $confactDestDir = Split-Path $tcbConfactOut -Parent
+        & bash (Join-Path $projectRoot "experiments\build_tcb_confact.sh") `
+            --source $confactSource --dest-dir $confactDestDir --rewriter-provider anthropic
+    } else {
+        Write-Warning "ConfACT source not found at $confactSource — skipping TCB build."
+        Write-Warning "Run experiments/clean_confact_v2.py first to generate the source file."
+    }
 }
 
 if ($RunExperiments) {
     $runs = @(
-        @{ Name = "ambigdocs"; Path = $ambigdocsOut; Benchmark = "ambigdocs" },
-        @{ Name = "faitheval"; Path = $faithevalOut; Benchmark = "faitheval" },
-        @{ Name = "tcb_ambigdocs"; Path = $tcbAmbigOut; Benchmark = "tcb" },
-        @{ Name = "tcb_faitheval"; Path = $tcbFaithOut; Benchmark = "tcb" }
+        @{ Name = "ramdocs";     Path = $ramdocsOut;    Benchmark = "ramdocs" },
+        @{ Name = "tcb_ramdocs"; Path = $tcbRamdocsOut; Benchmark = "tcb"     },
+        @{ Name = "confact";     Path = $confactSource; Benchmark = "confact"  },
+        @{ Name = "tcb_confact"; Path = $tcbConfactOut; Benchmark = "tcb"      }
     )
 
     foreach ($run in $runs) {
+        if (-not (Test-Path $run.Path)) {
+            Write-Warning "Dataset not found: $($run.Path) — skipping $($run.Name)"
+            continue
+        }
         Write-Host "Running experiments for $($run.Name)..."
         $outDir = Join-Path $projectRoot (Join-Path $OutputRoot $run.Name)
+        $ablationRounds = 0..$MaxAblationRounds
         & $python -m experiments.run_experiment `
             --dataset $run.Path `
             --benchmark $run.Benchmark `
-            --systems standard_rag madam_rag eajp `
+            --systems standard_rag madam_rag eajp_scorecard_only eajp `
+            --judge-rounds $JudgeRounds `
+            --reuse-madam-debate-for-eajp `
+            --ablate-rounds-from-cache $ablationRounds `
             --judge-suite $JudgeSuite `
             --output $outDir
     }

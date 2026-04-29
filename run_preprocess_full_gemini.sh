@@ -7,8 +7,7 @@ cd "$ROOT_DIR"
 ./preprocess_rewrites.sh \
   --rewriter-provider gemini \
   --dataset-root data/full \
-  --ambigdocs-splits train,validation,test \
-  --faitheval-splits train,validation,test \
+  --ramdocs-splits test \
   --pull-mode full \
   --tcb-resume 1 \
   --tcb-checkpoint-every 100 \

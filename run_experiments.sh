@@ -5,8 +5,7 @@ INSTALL_DEPENDENCIES=1
 BUILD_DATASETS=1
 RUN_EXPERIMENTS=1
 CREATE_VENV=1
-AMBIGDOCS_SPLIT="validation"
-FAITHEVAL_SPLIT="test"
+RAMDOCS_SPLIT="test"
 JUDGE_SUITE="both"
 AGENT_PROVIDER="openai"
 AGENT_MODEL=""
@@ -55,6 +54,7 @@ LLM_PROVIDER_PROMPT_CACHE=1
 VALIDATE_EAJP_SCHEMA=1
 EAJP_SCHEMA_STRICT_ENUMS=1
 COMPUTE_PROPOSAL_METRICS=1
+MAX_ABLATION_ROUNDS=""
 
 print_help() {
   cat <<'EOF'
@@ -63,9 +63,10 @@ Usage: ./run_experiments.sh [options]
 End-to-end workflow:
   1) create/update Python environment
   2) install dependencies
-  3) convert AmbigDocs and FaithEval
+  3) convert source datasets
   4) build TCB datasets
-  5) run standard_rag, madam_rag, eajp
+    5) run standard_rag, madam_rag, eajp_scorecard_only, eajp
+      and cache-driven round ablations from 0..max rounds
   6) compute benchmark summary table from produced metrics
 
 Options:
@@ -73,8 +74,7 @@ Options:
   --skip-build-datasets         Skip dataset conversion and TCB building
   --skip-run                    Skip experiment execution
   --skip-venv                   Use existing Python without creating venv
-  --ambigdocs-split <split>     validation|test (default: validation)
-  --faitheval-split <split>     Split for FaithEval (default: test)
+  --ramdocs-split <split>       RAMDocs split (default: test)
   --judge-suite <suite>         openai|anthropic|both (default: both)
   --agent-provider <provider>   openai|anthropic (default: openai)
   --agent-model <model>         Override agent model
@@ -117,6 +117,7 @@ Options:
   --sample-size <n>             Sample size per dataset when fast mode is on
   --sample-seed <n>             Random seed for sampled subsets
   --judge-rounds <n>            MADAM-RAG/EAJP debate rounds override
+  --max-ablation-rounds <n>     Maximum round for cache-driven ablations (default: judge-rounds)
   --madam-max-parallel-agents <n>
                                  Max concurrent per-round agent calls
   --madam-compact-doc-chars <n> Character cap for debate document excerpts
@@ -162,12 +163,8 @@ while [[ $# -gt 0 ]]; do
       CREATE_VENV=0
       shift
       ;;
-    --ambigdocs-split)
-      AMBIGDOCS_SPLIT="${2:-}"
-      shift 2
-      ;;
-    --faitheval-split)
-      FAITHEVAL_SPLIT="${2:-}"
+    --ramdocs-split)
+      RAMDOCS_SPLIT="${2:-}"
       shift 2
       ;;
     --judge-suite)
@@ -314,6 +311,10 @@ while [[ $# -gt 0 ]]; do
       JUDGE_ROUNDS="${2:-}"
       shift 2
       ;;
+    --max-ablation-rounds)
+      MAX_ABLATION_ROUNDS="${2:-}"
+      shift 2
+      ;;
     --madam-max-parallel-agents)
       MADAM_MAX_PARALLEL_AGENTS="${2:-}"
       shift 2
@@ -404,8 +405,8 @@ if [[ "$AGENT_PROVIDER" != "openai" && "$AGENT_PROVIDER" != "anthropic" ]]; then
   exit 1
 fi
 
-if [[ "$AMBIGDOCS_SPLIT" != "validation" && "$AMBIGDOCS_SPLIT" != "test" ]]; then
-  echo "Invalid --ambigdocs-split: $AMBIGDOCS_SPLIT" >&2
+if [[ -z "$RAMDOCS_SPLIT" ]]; then
+  echo "Invalid --ramdocs-split: $RAMDOCS_SPLIT" >&2
   exit 1
 fi
 
@@ -467,6 +468,13 @@ fi
 if [[ -n "$JUDGE_ROUNDS" ]]; then
   if ! [[ "$JUDGE_ROUNDS" =~ ^[0-9]+$ ]] || (( JUDGE_ROUNDS < 0 )); then
     echo "Invalid --judge-rounds: $JUDGE_ROUNDS" >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "$MAX_ABLATION_ROUNDS" ]]; then
+  if ! [[ "$MAX_ABLATION_ROUNDS" =~ ^[0-9]+$ ]]; then
+    echo "Invalid --max-ablation-rounds: $MAX_ABLATION_ROUNDS" >&2
     exit 1
   fi
 fi
@@ -537,41 +545,42 @@ if [[ "$TCB_FAIL_ON_INSTANCE_ERROR" -eq 1 ]]; then
   TCB_COMMON_ARGS+=(--fail-on-instance-error)
 fi
 
-AMBIGDOCS_OUT="$RUN_DATASET_ROOT/ambigdocs_${AMBIGDOCS_SPLIT}.json"
-FAITHEVAL_OUT="$RUN_DATASET_ROOT/faitheval_combined.json"
-TCB_AMBIG_OUT="$RUN_DATASET_ROOT/tcb_ambigdocs.json"
-if [[ -f "$RUN_DATASET_ROOT/tcb_ambigdocs_${AMBIGDOCS_SPLIT}.json" ]]; then
-  TCB_AMBIG_OUT="$RUN_DATASET_ROOT/tcb_ambigdocs_${AMBIGDOCS_SPLIT}.json"
+RAMDOCS_OUT="$RUN_DATASET_ROOT/ramdocs_${RAMDOCS_SPLIT}.json"
+
+TCB_RAMDOCS_OUT="$RUN_DATASET_ROOT/tcb_ramdocs.json"
+if [[ -f "$RUN_DATASET_ROOT/tcb_ramdocs_${RAMDOCS_SPLIT}.json" ]]; then
+  TCB_RAMDOCS_OUT="$RUN_DATASET_ROOT/tcb_ramdocs_${RAMDOCS_SPLIT}.json"
 fi
-TCB_FAITH_OUT="$RUN_DATASET_ROOT/tcb_faitheval.json"
+
+# ConfACT uses a subdirectory and its own dedicated builder
+CONFACT_SOURCE="${CONFACT_SOURCE:-$RUN_DATASET_ROOT/confact/humc_processed_cleaned.json}"
+TCB_CONFACT_OUT="${TCB_CONFACT_OUT:-$RUN_DATASET_ROOT/confact/tcb_humc_processed_cleaned.json}"
 
 if [[ "$BUILD_DATASETS" -eq 1 ]]; then
-  echo "[data] Converting AmbigDocs"
-  "$PYTHON_RUN" -m experiments.convert_ambigdocs \
-    --split "$AMBIGDOCS_SPLIT" \
-    --output "$AMBIGDOCS_OUT"
+  echo "[data] Converting RAMDocs"
+  "$PYTHON_RUN" -m experiments.convert_ramdocs \
+    --split "$RAMDOCS_SPLIT" \
+    --output "$RAMDOCS_OUT"
 
-  echo "[data] Converting FaithEval"
-  "$PYTHON_RUN" -m experiments.convert_faitheval \
-    --dataset-types counterfactual inconsistent \
-    --split "$FAITHEVAL_SPLIT" \
-    --output "$FAITHEVAL_OUT"
-
-  echo "[data] Building TCB from AmbigDocs"
+  echo "[data] Building TCB from RAMDocs"
   "$PYTHON_RUN" -m experiments.build_tcb \
-    --input "$AMBIGDOCS_OUT" \
-    --benchmark ambigdocs \
+    --input "$RAMDOCS_OUT" \
+    --benchmark ramdocs \
     --rewriter-provider "$REWRITER_PROVIDER" \
-    --output "$TCB_AMBIG_OUT" \
+    --output "$TCB_RAMDOCS_OUT" \
     "${TCB_COMMON_ARGS[@]}"
 
-  echo "[data] Building TCB from FaithEval"
-  "$PYTHON_RUN" -m experiments.build_tcb \
-    --input "$FAITHEVAL_OUT" \
-    --benchmark faitheval \
-    --rewriter-provider "$REWRITER_PROVIDER" \
-    --output "$TCB_FAITH_OUT" \
-    "${TCB_COMMON_ARGS[@]}"
+  echo "[data] Building ConfACT TCB (uses dedicated builder with Anthropic rewriter)"
+  if [[ -f "$CONFACT_SOURCE" ]]; then
+    bash "$PROJECT_ROOT/experiments/build_tcb_confact.sh" \
+      --source "$CONFACT_SOURCE" \
+      --dest-dir "$(dirname "$TCB_CONFACT_OUT")" \
+      --rewriter-provider "anthropic" \
+      ${VERBOSE:+--verbose}
+  else
+    echo "[data] WARNING: ConfACT source not found at $CONFACT_SOURCE — skipping TCB build"
+    echo "[data]   Run experiments/clean_confact_v2.py first to generate the source file."
+  fi
 
   if [[ "$PREPROCESS_REWRITES" -eq 1 ]]; then
     echo "[data] Preprocessing full corpora and prebuilding TCB artifacts"
@@ -600,17 +609,32 @@ run_one() {
   local out_dir="$OUTPUT_ROOT/$name"
   mkdir -p "$out_dir"
 
+  local configured_rounds="$JUDGE_ROUNDS"
+  if [[ -z "$configured_rounds" ]]; then
+    configured_rounds="${DEBATE_ROUNDS:-3}"
+  fi
+  local ablation_max="$MAX_ABLATION_ROUNDS"
+  if [[ -z "$ablation_max" ]]; then
+    ablation_max="$configured_rounds"
+  fi
+  local ablation_round_args=()
+  for ((r=0; r<=ablation_max; r++)); do
+    ablation_round_args+=("$r")
+  done
+
   echo "[run] $name -> benchmark=$benchmark, dataset=$dataset_path, workers=$workers, throttle_ms=$throttle"
 
   local cmd=(
     "$PYTHON_RUN" -m experiments.run_experiment
     --dataset "$dataset_path"
     --benchmark "$benchmark"
-    --systems standard_rag madam_rag eajp
+    --systems standard_rag madam_rag eajp_scorecard_only eajp
     --judge-suite "$JUDGE_SUITE"
     --agent-provider "$AGENT_PROVIDER"
     --max-workers "$workers"
     --output "$out_dir"
+    --reuse-madam-debate-for-eajp
+    --ablate-rounds-from-cache "${ablation_round_args[@]}"
   )
 
   if [[ -n "$AGENT_MODEL" ]]; then
@@ -679,10 +703,10 @@ run_one() {
 
 if [[ "$RUN_EXPERIMENTS" -eq 1 ]]; then
   runs=(
-    "ambigdocs|$AMBIGDOCS_OUT|ambigdocs"
-    "faitheval|$FAITHEVAL_OUT|faitheval"
-    "tcb_ambigdocs|$TCB_AMBIG_OUT|tcb"
-    "tcb_faitheval|$TCB_FAITH_OUT|tcb"
+    "ramdocs|$RAMDOCS_OUT|ramdocs"
+    "tcb_ramdocs|$TCB_RAMDOCS_OUT|tcb"
+    "confact|$CONFACT_SOURCE|confact"
+    "tcb_confact|$TCB_CONFACT_OUT|tcb"
   )
 
   if [[ "$PARALLEL_DATASETS" -eq 1 ]]; then

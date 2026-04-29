@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--input", required=True, help="Source dataset JSON.")
     p.add_argument(
         "--benchmark",
-        choices=["custom", "ambigdocs", "faitheval", "tcb"],
+        choices=["custom", "ramdocs", "confact", "tcb"],
         default="custom",
         help="Dataset family for loader behavior.",
     )
