@@ -30,7 +30,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 # MADAM-RAG debate settings
 # ---------------------------------------------------------------------------
 DEBATE_ROUNDS = int(os.getenv("DEBATE_ROUNDS", "3"))
-MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1024"))
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.0"))
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import random
 from dataclasses import dataclass, field
 import json
 import os
@@ -40,6 +41,12 @@ from src.prompts import (
     MADAM_DEBATE_USER,
     MADAM_AGGREGATOR_SYSTEM,
     MADAM_AGGREGATOR_USER,
+    MADAM_AGGREGATOR_CREDIBILITY_HINT_SYSTEM,
+    MADAM_AGGREGATOR_CREDIBILITY_HINT_USER,
+    MADAM_RA_RAG_SYSTEM,
+    MADAM_RA_RAG_USER,
+    MADAM_COT_JUDGE_SYSTEM,
+    MADAM_COT_JUDGE_USER,
     format_other_arguments,
 )
 
@@ -214,8 +221,12 @@ class Aggregator:
         documents: Optional[List[Document]] = None,
         agent_claims: Optional[Dict[str, str]] = None,
     ) -> LLMResponse:
+        # Shuffle agent order to eliminate position bias before presenting to
+        # the judge — matches the reference implementation (Wang et al. 2025).
+        items = list(final_arguments.items())
+        random.shuffle(items)
         formatted = "\n\n".join(
-            f"[Analyst {aid}]:\n{arg}" for aid, arg in final_arguments.items()
+            f"[Analyst {aid}]:\n{arg}" for aid, arg in items
         )
         user_prompt = MADAM_AGGREGATOR_USER.format(
             question=question,
@@ -223,6 +234,124 @@ class Aggregator:
             final_arguments=formatted,
         )
         return self.llm.generate(MADAM_AGGREGATOR_SYSTEM, user_prompt)
+
+
+class CredibilityHintAggregator(Aggregator):
+    """MADAM aggregator that injects per-document credibility tiers into the
+    judge prompt before arguments are read.
+
+    Isolates the contribution of a simple credibility signal without any
+    structured scorecard or privilege override — a lightweight ablation
+    baseline between plain MADAM-RAG and full EAJP.
+    """
+
+    def aggregate(
+        self,
+        question: str,
+        final_arguments: Dict[str, str],
+        num_rounds: int,
+        documents: Optional[List[Document]] = None,
+        agent_claims: Optional[Dict[str, str]] = None,
+    ) -> LLMResponse:
+        items = list(final_arguments.items())
+        random.shuffle(items)
+        formatted = "\n\n".join(
+            f"[Analyst {aid}]:\n{arg}" for aid, arg in items
+        )
+        doc_map = {d.id: d for d in (documents or [])}
+        cred_lines = [
+            f"- Analyst {aid}: {(doc_map[aid].credibility if aid in doc_map and doc_map[aid].credibility else 'unknown')}-credibility"
+            for aid, _ in items
+        ]
+        credibility_summary = (
+            "\n".join(cred_lines)
+            if cred_lines
+            else "(credibility information not available)"
+        )
+        user_prompt = MADAM_AGGREGATOR_CREDIBILITY_HINT_USER.format(
+            question=question,
+            credibility_summary=credibility_summary,
+            num_rounds=num_rounds,
+            final_arguments=formatted,
+        )
+        return self.llm.generate(MADAM_AGGREGATOR_CREDIBILITY_HINT_SYSTEM, user_prompt)
+
+
+class ReliabilityAwareAggregator(Aggregator):
+    """MADAM aggregator that estimates source reliability via cross-document
+    consistency before aggregating — a judge-only reimplementation of the
+    RA-RAG approach (Tang et al.).
+
+    Presents the judge with per-document excerpts and credibility tiers
+    alongside the debate arguments, then asks for an explicit consistency
+    assessment before committing to a final answer.
+    """
+
+    def __init__(self, llm: LLMClient, doc_excerpt_chars: int = 500):
+        super().__init__(llm)
+        self.doc_excerpt_chars = max(100, doc_excerpt_chars)
+
+    def aggregate(
+        self,
+        question: str,
+        final_arguments: Dict[str, str],
+        num_rounds: int,
+        documents: Optional[List[Document]] = None,
+        agent_claims: Optional[Dict[str, str]] = None,
+    ) -> LLMResponse:
+        items = list(final_arguments.items())
+        random.shuffle(items)
+        doc_map = {d.id: d for d in (documents or [])}
+
+        evidence_parts: List[str] = []
+        for aid, arg in items:
+            doc = doc_map.get(aid)
+            excerpt = _clip(doc.content if doc else "", self.doc_excerpt_chars)
+            cred = (doc.credibility if doc else None) or "unknown"
+            evidence_parts.append(
+                f"[Analyst {aid}] (credibility: {cred})\n"
+                f"Document excerpt: {excerpt}\n"
+                f"Analyst argument: {arg}"
+            )
+
+        evidence_summary = "\n\n".join(evidence_parts)
+        formatted = "\n\n".join(f"[Analyst {aid}]:\n{arg}" for aid, arg in items)
+        user_prompt = MADAM_RA_RAG_USER.format(
+            question=question,
+            num_rounds=num_rounds,
+            evidence_summary=evidence_summary,
+            final_arguments=formatted,
+        )
+        return self.llm.generate(MADAM_RA_RAG_SYSTEM, user_prompt)
+
+
+class ChainOfThoughtAggregator(Aggregator):
+    """MADAM aggregator that prompts the judge to reason step-by-step about
+    evidence quality before committing to a final answer.
+
+    Tests whether the benefit of EAJP's structured scorecard comes from
+    explicit evidence reasoning vs. the scorecard format itself.
+    """
+
+    def aggregate(
+        self,
+        question: str,
+        final_arguments: Dict[str, str],
+        num_rounds: int,
+        documents: Optional[List[Document]] = None,
+        agent_claims: Optional[Dict[str, str]] = None,
+    ) -> LLMResponse:
+        items = list(final_arguments.items())
+        random.shuffle(items)
+        formatted = "\n\n".join(
+            f"[Analyst {aid}]:\n{arg}" for aid, arg in items
+        )
+        user_prompt = MADAM_COT_JUDGE_USER.format(
+            question=question,
+            num_rounds=num_rounds,
+            final_arguments=formatted,
+        )
+        return self.llm.generate(MADAM_COT_JUDGE_SYSTEM, user_prompt)
 
 
 def _extract_json_block(text: str) -> Dict[str, Any]:
@@ -245,7 +374,7 @@ def _claim_from_text(text: str) -> str:
     if not text.strip():
         return ""
     first_line = text.strip().splitlines()[0].strip()
-    return first_line[:240]
+    return first_line[:1000]
 
 
 class EvidenceAnchoredAggregator(Aggregator):
@@ -255,21 +384,28 @@ class EvidenceAnchoredAggregator(Aggregator):
         self,
         llm: LLMClient,
         privilege_scorecard: bool = True,
-        compact_doc_chars: int = 1000,
+        compact_doc_chars: int = 10000,
         short_circuit_on_confident_scorecard: bool = True,
+        force_scorecard_only: bool = False,
     ):
         super().__init__(llm)
         self.privilege_scorecard = privilege_scorecard
         self.compact_doc_chars = max(200, compact_doc_chars)
         self.short_circuit_on_confident_scorecard = short_circuit_on_confident_scorecard
+        self.force_scorecard_only = force_scorecard_only
 
     def _build_evidence_bundle(
         self,
         documents: List[Document],
         agent_claims: Dict[str, str],
     ) -> str:
+        # Shuffle document order to prevent position bias in the preliminary
+        # verdict — TCB instances always place the correct doc first, so a
+        # fixed order would systematically favour it in the scorecard phase.
+        doc_list = list(documents)
+        random.shuffle(doc_list)
         parts: List[str] = []
-        for i, doc in enumerate(documents):
+        for i, doc in enumerate(doc_list):
             agent_id = doc.id or f"doc_{i + 1}"
             parts.append(
                 "\n".join(
@@ -367,7 +503,10 @@ class EvidenceAnchoredAggregator(Aggregator):
             "preliminary_verdict": preliminary_verdict,
         }
 
-        if self.short_circuit_on_confident_scorecard and self._confident_preliminary(typed_entries, preliminary_winner):
+        if self.force_scorecard_only or (
+            self.short_circuit_on_confident_scorecard
+            and self._confident_preliminary(typed_entries, preliminary_winner)
+        ):
             winner_entry = scorecard_lookup.get(preliminary_winner)
             chosen_claim = (
                 claims.get(preliminary_winner)
@@ -381,24 +520,32 @@ class EvidenceAnchoredAggregator(Aggregator):
                 metadata={
                     "judge_mode": "eajp",
                     "scorecard": scorecard_struct,
-                    "short_circuit_used": True,
+                    "short_circuit_used": not self.force_scorecard_only,
+                    "scorecard_only_used": self.force_scorecard_only,
                     "scorecard_privilege_applied": False,
+                    "preliminary_winner_id": preliminary_winner,
+                    "final_winner_id_before_privilege": preliminary_winner,
                     "final_winner_id": preliminary_winner,
                     "final_verdict": preliminary_verdict,
                 },
             )
 
         scorecard_json = json.dumps(scorecard_struct, indent=2)
+        # Shuffle agent order before final judge to eliminate position bias —
+        # consistent with the base Aggregator and the MADAM-RAG reference impl.
+        final_items = list(final_arguments.items())
+        random.shuffle(final_items)
         final_prompt = EAJP_FINAL_USER.format(
             question=question,
             scorecard_json=scorecard_json,
             final_arguments="\n\n".join(
-                f"[Analyst {aid}]:\n{arg}" for aid, arg in final_arguments.items()
+                f"[Analyst {aid}]:\n{arg}" for aid, arg in final_items
             ),
         )
         final_resp = self.llm.generate(EAJP_FINAL_SYSTEM, final_prompt)
         final_data = _extract_json_block(final_resp.text)
         final_winner = str(final_data.get("final_winner_id", "")).strip()
+        final_winner_before_privilege = final_winner
         final_answer = str(final_data.get("final_answer", "")).strip()
         final_verdict = str(final_data.get("final_verdict", "")).strip()
 
@@ -443,7 +590,10 @@ class EvidenceAnchoredAggregator(Aggregator):
                 "judge_mode": "eajp",
                 "scorecard": scorecard_struct,
                 "short_circuit_used": False,
+                "scorecard_only_used": False,
                 "scorecard_privilege_applied": privilege_applied,
+                "preliminary_winner_id": preliminary_winner,
+                "final_winner_id_before_privilege": final_winner_before_privilege,
                 "final_winner_id": final_winner,
                 "final_verdict": final_verdict,
             },
@@ -476,8 +626,8 @@ class MadamRAG:
         num_rounds: Optional[int] = None,
         judge: Optional[Aggregator] = None,
         max_parallel_agents: Optional[int] = None,
-        compact_doc_chars: int = 1200,
-        argument_summary_chars: int = 240,
+        compact_doc_chars: int = 10000,
+        argument_summary_chars: int = 1000,
         early_stop_patience: int = 1,
         include_full_document_in_debate: bool = False,
     ):
@@ -494,8 +644,12 @@ class MadamRAG:
         self.include_full_document_in_debate = include_full_document_in_debate
 
     def _summarize_arguments(self, responses: Dict[str, str]) -> Dict[str, str]:
+        # Pass the full response (claim + update + evidence) to opponent agents,
+        # not just the first-line claim. Matches the reference code which forwards
+        # complete peer responses so agents can engage with the evidence, not just
+        # the headline assertion.
         return {
-            aid: _clip(_claim_from_text(text) or text, self.argument_summary_chars)
+            aid: _clip(text, self.argument_summary_chars)
             for aid, text in responses.items()
         }
 
@@ -549,7 +703,7 @@ class MadamRAG:
 
         # 3. Debate rounds
         stable_rounds = 0
-        prev_consensus_claim = None
+        prev_agent_answers: Dict[str, str] = {}
         early_stop_triggered = False
         for r in range(1, self.num_rounds + 1):
             logger.info("MADAM-RAG [%s] – debate round %d/%d", instance.id, r, self.num_rounds)
@@ -590,16 +744,21 @@ class MadamRAG:
                 round_r.extend(responses)
             debate_history.rounds.append(round_r)
 
-            consensus_claims = {_norm_claim(_claim_from_text(a.latest_response.text)) for a in agents}
-            consensus_claim = next(iter(consensus_claims)) if len(consensus_claims) == 1 else None
-            if consensus_claim and consensus_claim == prev_consensus_claim:
+            # Early stop: each agent's answer stable (unchanged) from previous
+            # round — mirrors the reference code which stops when no agent
+            # changes its answer, regardless of whether agents agree with each other.
+            current_agent_answers = {
+                a.agent_id: _norm_claim(_claim_from_text(a.latest_response.text))
+                for a in agents
+            }
+            if prev_agent_answers and current_agent_answers == prev_agent_answers:
                 stable_rounds += 1
             else:
                 stable_rounds = 0
-            prev_consensus_claim = consensus_claim
-            if consensus_claim and stable_rounds >= self.early_stop_patience:
+            prev_agent_answers = current_agent_answers
+            if stable_rounds >= self.early_stop_patience:
                 early_stop_triggered = True
-                logger.info("MADAM-RAG [%s] – early stop at round %d (stable consensus)", instance.id, r)
+                logger.info("MADAM-RAG [%s] – early stop at round %d (all agents stable)", instance.id, r)
                 break
 
         # 4. Aggregation

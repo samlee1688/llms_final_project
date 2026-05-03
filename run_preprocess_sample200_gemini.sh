@@ -10,8 +10,7 @@ cd "$ROOT_DIR"
   --pull-mode sample \
   --sample-size 200 \
   --sample-seed 42 \
-  --ambigdocs-splits validation \
-  --faitheval-splits test \
+  --ramdocs-splits test \
   --tcb-resume 1 \
   --tcb-checkpoint-every 100 \
   --tcb-max-rewrite-retries 8 \

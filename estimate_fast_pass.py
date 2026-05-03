@@ -23,10 +23,10 @@ from typing import Dict, Iterable, List, Tuple
 
 
 DEFAULT_DATASETS = [
-    ("ambigdocs", "ambigdocs_validation.json"),
-    ("faitheval", "faitheval_combined.json"),
-    ("tcb_ambigdocs", "tcb_ambigdocs_validation.json"),
-    ("tcb_faitheval", "tcb_faitheval.json"),
+    ("ramdocs", "ramdocs_test.json"),
+    ("tcb_ramdocs", "tcb_ramdocs_test.json"),
+    ("confact", "confact/humc_processed_cleaned.json"),
+    ("tcb_confact", "confact/tcb_humc_processed_cleaned.json"),
 ]
 
 # Per-1M token rates in USD, keyed by model-id prefix.
@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
         "--datasets",
         nargs="*",
         default=[f"{k}:{v}" for k, v in DEFAULT_DATASETS],
-        help="Dataset mapping entries benchmark:file, e.g. ambigdocs:ambigdocs_validation.json",
+        help="Dataset mapping entries benchmark:file, e.g. ramdocs:ramdocs_test.json",
     )
     parser.add_argument(
         "--target-sample-size",
@@ -199,6 +199,8 @@ def stage_name(system: str) -> str:
         return "Standard RAG"
     if system == "madam_rag":
         return "MADAM-RAG"
+    if system == "eajp_scorecard_only":
+        return "EAJP Scorecard-Only"
     if system == "eajp":
         return "EAJP"
     return system

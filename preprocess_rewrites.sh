@@ -3,8 +3,7 @@ set -euo pipefail
 
 PYTHON_EXE=""
 REWRITER_PROVIDER="gemini"
-AMBIGDOCS_SPLITS="train,validation,test"
-FAITHEVAL_SPLITS="train,validation,test"
+RAMDOCS_SPLITS="test"
 DATASET_ROOT="data"
 PULL_MODE="full"
 SAMPLE_SIZE=200
@@ -14,23 +13,23 @@ TCB_CHECKPOINT_EVERY=100
 TCB_MAX_REWRITE_RETRIES=6
 TCB_REWRITE_BACKOFF_BASE_SECONDS=1.5
 TCB_FAIL_ON_INSTANCE_ERROR=0
-SKIP_AMBIGDOCS=0
-SKIP_FAITHEVAL=0
+SKIP_RAMDOCS=0
+SKIP_CONFACT=0
+CONFACT_SOURCE=""
 
 print_help() {
   cat <<'EOF'
 Usage: ./preprocess_rewrites.sh [options]
 
-Download/convert full AmbigDocs and FaithEval corpora, then build
-TCB datasets using the selected rewrite provider (Gemini by default).
+Download/convert source corpora, then build TCB datasets using the selected
+rewrite provider (Gemini by default).
 
 Options:
   --python <path>                Python executable to use
   --rewriter-provider <name>     gemini|local (default: gemini)
   --dataset-root <path>          Root folder for original + TCB outputs (default: data)
   --output-dir <path>            Alias for --dataset-root (backward compatible)
-  --ambigdocs-splits <csv>       Comma-separated splits (default: train,validation,test)
-  --faitheval-splits <csv>       Comma-separated splits (default: train,validation,test)
+  --ramdocs-splits <csv>         Comma-separated RAMDocs splits (default: test)
   --pull-mode <mode>             full|sample (default: full)
   --sample-size <n>              Target matched sample size when --pull-mode sample
   --sample-seed <n>              RNG seed for sampling (default: 42)
@@ -41,8 +40,10 @@ Options:
                                  Backoff base seconds for TCB rewrite retries
   --tcb-fail-on-instance-error <0|1>
                                  Abort TCB build on first instance error
-  --skip-ambigdocs               Skip AmbigDocs conversion + TCB build
-  --skip-faitheval               Skip FaithEval conversion + TCB build
+  --skip-ramdocs                 Skip RAMDocs conversion + TCB build
+  --skip-confact                 Skip ConfACT TCB build
+  --confact-source <path>        Path to preprocessed ConfACT JSON
+                                  (generate with: bash experiments/build_confact_dataset.sh)
   -h, --help                     Show this help message
 
 Sample mode behavior:
@@ -72,12 +73,8 @@ while [[ $# -gt 0 ]]; do
       DATASET_ROOT="${2:-}"
       shift 2
       ;;
-    --ambigdocs-splits)
-      AMBIGDOCS_SPLITS="${2:-}"
-      shift 2
-      ;;
-    --faitheval-splits)
-      FAITHEVAL_SPLITS="${2:-}"
+    --ramdocs-splits)
+      RAMDOCS_SPLITS="${2:-}"
       shift 2
       ;;
     --pull-mode)
@@ -112,13 +109,17 @@ while [[ $# -gt 0 ]]; do
       TCB_FAIL_ON_INSTANCE_ERROR="${2:-}"
       shift 2
       ;;
-    --skip-ambigdocs)
-      SKIP_AMBIGDOCS=1
+    --skip-ramdocs)
+      SKIP_RAMDOCS=1
       shift
       ;;
-    --skip-faitheval)
-      SKIP_FAITHEVAL=1
+    --skip-confact)
+      SKIP_CONFACT=1
       shift
+      ;;
+    --confact-source)
+      CONFACT_SOURCE="${2:-}"
+      shift 2
       ;;
     -h|--help)
       print_help
@@ -224,128 +225,61 @@ build_matched_sample_pair() {
     --require-full-target
 }
 
-if [[ "$SKIP_AMBIGDOCS" -eq 0 ]]; then
-  IFS=',' read -r -a SPLITS <<< "$AMBIGDOCS_SPLITS"
+if [[ "$SKIP_RAMDOCS" -eq 0 ]]; then
+  IFS=',' read -r -a SPLITS <<< "$RAMDOCS_SPLITS"
   for split in "${SPLITS[@]}"; do
-    case "$split" in
-      train|validation|test)
-        ;;
-      *)
-        echo "Invalid AmbigDocs split in --ambigdocs-splits: $split" >&2
-        exit 1
-        ;;
-    esac
+    if [[ -z "$split" ]]; then
+      echo "Invalid RAMDocs split in --ramdocs-splits: $split" >&2
+      exit 1
+    fi
 
-    ambig_out="$DATASET_ROOT/ambigdocs_${split}.json"
-    ambig_tcb_out="$DATASET_ROOT/tcb_ambigdocs_${split}.json"
+    ramdocs_out="$DATASET_ROOT/ramdocs_${split}.json"
+    ramdocs_tcb_out="$DATASET_ROOT/tcb_ramdocs_${split}.json"
 
-    echo "[preprocess] Converting AmbigDocs split=$split -> $ambig_out"
-    "$PYTHON_EXE" -m experiments.convert_ambigdocs \
+    echo "[preprocess] Converting RAMDocs split=$split -> $ramdocs_out"
+    "$PYTHON_EXE" -m experiments.convert_ramdocs \
       --split "$split" \
-      --output "$ambig_out"
+      --output "$ramdocs_out"
 
     if [[ "$PULL_MODE" == "sample" ]]; then
-      echo "[preprocess] Building matched sampled pair for AmbigDocs split=$split (target=$SAMPLE_SIZE)"
-      build_matched_sample_pair "$ambig_out" "ambigdocs" "$ambig_tcb_out"
+      echo "[preprocess] Building matched sampled pair for RAMDocs split=$split (target=$SAMPLE_SIZE)"
+      build_matched_sample_pair "$ramdocs_out" "ramdocs" "$ramdocs_tcb_out"
     else
-      echo "[preprocess] Building TCB for AmbigDocs split=$split with provider=$REWRITER_PROVIDER -> $ambig_tcb_out"
+      echo "[preprocess] Building TCB for RAMDocs split=$split with provider=$REWRITER_PROVIDER -> $ramdocs_tcb_out"
       "$PYTHON_EXE" -m experiments.build_tcb \
-        --input "$ambig_out" \
-        --benchmark ambigdocs \
+        --input "$ramdocs_out" \
+        --benchmark ramdocs \
         --rewriter-provider "$REWRITER_PROVIDER" \
-        --output "$ambig_tcb_out" \
+        --output "$ramdocs_tcb_out" \
         "${TCB_COMMON_ARGS[@]}"
     fi
   done
 fi
 
-if [[ "$SKIP_FAITHEVAL" -eq 0 ]]; then
-  IFS=',' read -r -a FAITH_SPLITS <<< "$FAITHEVAL_SPLITS"
-  for split in "${FAITH_SPLITS[@]}"; do
-    case "$split" in
-      train|validation|test)
-        ;;
-      *)
-        echo "Invalid FaithEval split in --faitheval-splits: $split" >&2
-        exit 1
-        ;;
-    esac
-  done
+# ---------------------------------------------------------------------------
+# ConfACT — TCB build (no download step; source must be pre-generated)
+# ---------------------------------------------------------------------------
+# Generate the source file first:
+#   bash experiments/build_confact_dataset.sh
 
-  AVAILABLE_FAITH_SPLITS=()
-  while IFS= read -r split_name; do
-    if [[ -n "$split_name" ]]; then
-      AVAILABLE_FAITH_SPLITS+=("$split_name")
-    fi
-  done < <(
-    "$PYTHON_EXE" - <<'PY'
-from datasets import get_dataset_split_names
-
-datasets = [
-    "Salesforce/FaithEval-counterfactual-v1.0",
-    "Salesforce/FaithEval-inconsistent-v1.0",
-]
-split_sets = []
-for name in datasets:
-    split_sets.append(set(get_dataset_split_names(name)))
-
-common = sorted(set.intersection(*split_sets)) if split_sets else []
-for s in common:
-    print(s)
-PY
-  )
-
-if [[ "${#AVAILABLE_FAITH_SPLITS[@]}" -eq 0 ]]; then
-  echo "No available FaithEval splits were discovered from Hugging Face." >&2
-  exit 1
-fi
-
-processed_any=0
-for split in "${FAITH_SPLITS[@]}"; do
-  available=0
-  for s in "${AVAILABLE_FAITH_SPLITS[@]}"; do
-    if [[ "$s" == "$split" ]]; then
-      available=1
-      break
-    fi
-  done
-  if [[ "$available" -ne 1 ]]; then
-    echo "[preprocess] Skipping FaithEval split=$split (not available on HF; available: ${AVAILABLE_FAITH_SPLITS[*]})"
-    continue
+if [[ "$SKIP_CONFACT" -eq 0 ]]; then
+  CONFACT_OUT_DIR="$DATASET_ROOT/confact"
+  if [[ -z "$CONFACT_SOURCE" ]]; then
+    CONFACT_SOURCE="$CONFACT_OUT_DIR/humc_processed_cleaned.json"
   fi
+  TCB_CONFACT_OUT="$CONFACT_OUT_DIR/tcb_humc_processed_cleaned.json"
 
-  processed_any=1
-  if [[ "$split" == "test" ]]; then
-    faith_out="$DATASET_ROOT/faitheval_combined.json"
-    faith_tcb_out="$DATASET_ROOT/tcb_faitheval.json"
+  if [[ ! -f "$CONFACT_SOURCE" ]]; then
+    echo "[preprocess] WARNING: ConfACT source not found: $CONFACT_SOURCE"
+    echo "[preprocess] Run: bash experiments/build_confact_dataset.sh"
+    echo "[preprocess] Skipping ConfACT TCB build."
   else
-    faith_out="$DATASET_ROOT/faitheval_combined_${split}.json"
-    faith_tcb_out="$DATASET_ROOT/tcb_faitheval_${split}.json"
-  fi
-
-  echo "[preprocess] Converting FaithEval split=$split -> $faith_out"
-  "$PYTHON_EXE" -m experiments.convert_faitheval \
-    --dataset-types counterfactual inconsistent \
-    --split "$split" \
-    --output "$faith_out"
-
-  if [[ "$PULL_MODE" == "sample" ]]; then
-    echo "[preprocess] Building matched sampled pair for FaithEval split=$split (target=$SAMPLE_SIZE)"
-    build_matched_sample_pair "$faith_out" "faitheval" "$faith_tcb_out"
-  else
-    echo "[preprocess] Building TCB for FaithEval split=$split with provider=$REWRITER_PROVIDER -> $faith_tcb_out"
-    "$PYTHON_EXE" -m experiments.build_tcb \
-      --input "$faith_out" \
-      --benchmark faitheval \
-      --rewriter-provider "$REWRITER_PROVIDER" \
-      --output "$faith_tcb_out" \
-      "${TCB_COMMON_ARGS[@]}"
-  fi
-  done
-
-  if [[ "$processed_any" -eq 0 ]]; then
-    echo "No requested FaithEval splits were available. Requested: $FAITHEVAL_SPLITS; available: ${AVAILABLE_FAITH_SPLITS[*]}" >&2
-    exit 1
+    echo "[preprocess] Building TCB for ConfACT with provider=anthropic -> $TCB_CONFACT_OUT"
+    mkdir -p "$CONFACT_OUT_DIR"
+    bash "$(dirname "${BASH_SOURCE[0]}")/experiments/build_tcb_confact.sh" \
+      --source "$CONFACT_SOURCE" \
+      --dest-dir "$CONFACT_OUT_DIR" \
+      --rewriter-provider anthropic
   fi
 fi
 

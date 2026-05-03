@@ -18,6 +18,12 @@ results/
 # data
 data/
 
+#caches
+.cache/
+
+#logs
+logs/
+
 # IDE
 .idea/
 .vscode/

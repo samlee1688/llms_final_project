@@ -53,8 +53,12 @@ def _err(errors: list[str], file: Path, idx: int, msg: str) -> None:
     errors.append(f"{file} :: trial_index={idx} :: {msg}")
 
 
+_EAJP_SYSTEMS = {"eajp", "eajp_no_privilege"}
+
+
 def _validate_trial(file: Path, idx: int, trial: dict[str, Any], strict_enums: bool, errors: list[str]) -> None:
-    if trial.get("system") != "eajp":
+    system = trial.get("system")
+    if system not in _EAJP_SYSTEMS:
         return
 
     md = trial.get("metadata")
@@ -62,8 +66,8 @@ def _validate_trial(file: Path, idx: int, trial: dict[str, Any], strict_enums: b
         _err(errors, file, idx, "metadata missing or not object")
         return
 
-    if md.get("judge_mode") != "eajp":
-        _err(errors, file, idx, "metadata.judge_mode != 'eajp'")
+    if md.get("judge_mode") not in _EAJP_SYSTEMS:
+        _err(errors, file, idx, f"metadata.judge_mode '{md.get('judge_mode')}' not in {_EAJP_SYSTEMS}")
 
     jm = md.get("judge_metadata")
     if not isinstance(jm, dict):
@@ -159,12 +163,12 @@ def main() -> int:
             if not isinstance(trial, dict):
                 errors.append(f"{file} :: trial_index={i} :: trial is not object")
                 continue
-            if trial.get("system") == "eajp":
+            if trial.get("system") in _EAJP_SYSTEMS:
                 eajp_trials += 1
             _validate_trial(file, i, trial, args.strict_enums, errors)
 
     print(f"Checked detail files: {len(files)}")
-    print(f"EAJP trials checked: {eajp_trials}")
+    print(f"EAJP-family trials checked ({', '.join(sorted(_EAJP_SYSTEMS))}): {eajp_trials}")
     if errors:
         print(f"Schema validation FAILED with {len(errors)} issue(s):", file=sys.stderr)
         for err in errors[:200]:

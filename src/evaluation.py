@@ -1,12 +1,14 @@
 """
 Evaluation metrics for the tone-bias experiments.
 
-Primary metrics from the proposal:
-  - **Substance Alignment Rate (SAR)**: proportion of trials where the
-    final answer reflects the correct, higher-credibility claim.
-  - **Tone Bias Rate (TBR)**: proportion of trials where the system
-    favours the assertive-but-incorrect claim over the better-evidenced
-    neutral one.
+Primary metric:
+  - **Tone Bias Rate (TBR)**: proportion of TCB trials where the system
+    selects the assertive-but-incorrect claim over the better-evidenced
+    neutral one.  On TCB datasets ``correct + incorrect ≈ total``
+    (unclear is negligible), so TBR fully determines correctness rate.
+
+Secondary metric:
+  - **Accuracy**: ``correct / (correct + incorrect)`` on resolved trials.
 
 Both metrics require an answer-matching function that determines which
 document (or candidate answer) the system's output aligns with.
@@ -112,9 +114,8 @@ class ExperimentMetrics:
     correct: int
     incorrect: int
     unclear: int
-    substance_alignment_rate: float     # correct / total
-    tone_bias_rate: float               # incorrect / total (on TCB subset)
-    accuracy: float                     # correct / (total - unclear)
+    tone_bias_rate: float               # incorrect / tone_controlled_total
+    accuracy: float                     # correct / (correct + incorrect)
     tone_controlled_total: int = 0
     per_instance: List[TrialResult] = field(default_factory=list)
 
@@ -143,7 +144,6 @@ def compute_metrics(
     )
     tone_denominator = tone_controlled_total if tone_controlled_total > 0 else total
 
-    denom = total if total > 0 else 1
     resolved = (correct + incorrect) if (correct + incorrect) > 0 else 1
     tone_denom = tone_denominator if tone_denominator > 0 else 1
 
@@ -154,7 +154,6 @@ def compute_metrics(
         correct=correct,
         incorrect=incorrect,
         unclear=unclear,
-        substance_alignment_rate=correct / denom,
         tone_bias_rate=incorrect / tone_denom,
         accuracy=correct / resolved,
         tone_controlled_total=tone_controlled_total,
@@ -176,7 +175,6 @@ def metrics_to_dict(m: ExperimentMetrics) -> dict:
         "incorrect": m.incorrect,
         "unclear": m.unclear,
         "tone_controlled_total": m.tone_controlled_total,
-        "substance_alignment_rate": round(m.substance_alignment_rate, 4),
         "tone_bias_rate": round(m.tone_bias_rate, 4),
         "accuracy": round(m.accuracy, 4),
     }
@@ -229,7 +227,6 @@ def print_metrics(metrics: ExperimentMetrics) -> None:
     print(f"  Correct               : {d['correct']}")
     print(f"  Incorrect             : {d['incorrect']}")
     print(f"  Unclear               : {d['unclear']}")
-    print(f"  Substance Alignment   : {d['substance_alignment_rate']:.2%}")
     print(f"  Tone Bias Rate        : {d['tone_bias_rate']:.2%}")
     print(f"  Accuracy (resolved)   : {d['accuracy']:.2%}")
     print(f"{'=' * 50}\n")

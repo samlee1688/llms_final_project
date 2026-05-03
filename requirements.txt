@@ -6,3 +6,19 @@ tqdm>=4.65.0
 python-dotenv>=1.0.0
 google-genai>=0.8.0
 datasets>=2.19.0
+matplotlib>=3.8.0
+# Quality scoring (BERTScore + cosine similarity)
+bert-score>=0.3.12
+sentence-transformers>=2.7.0
+# PyTorch is required for BERTScore and SentenceTransformer.
+# MPS (Apple Silicon, macOS >=12.3) and CPU are included in the standard wheel:
+#   pip install torch
+# CUDA (Linux/Windows with NVIDIA GPU — pick the matching CUDA version):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121   # CUDA 12.1
+#   pip install torch --index-url https://download.pytorch.org/whl/cu118   # CUDA 11.8
+# Readability metrics (used by analyze_tcb_readability.py and quality_checker_extended.py)
+textstat>=0.7.3
+# NLI entailment gate (used by quality_checker_extended.py --use-nli)
+# Requires: pip install torch transformers
+# Model downloaded on first use: cross-encoder/nli-deberta-v3-base (~180 MB)
+transformers>=4.40.0

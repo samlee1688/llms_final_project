@@ -28,13 +28,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", required=True, help="Output path for filtered source JSON.")
     p.add_argument(
         "--source-benchmark",
-        choices=["custom", "ambigdocs", "faitheval", "tcb"],
+        choices=["custom", "ramdocs", "confact", "tcb"],
         default="custom",
         help="Loader family for --source.",
     )
     p.add_argument(
         "--tcb-benchmark",
-        choices=["custom", "ambigdocs", "faitheval", "tcb"],
+        choices=["custom", "ramdocs", "confact", "tcb"],
         default="tcb",
         help="Loader family for --tcb.",
     )

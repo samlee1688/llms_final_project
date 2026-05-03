@@ -48,7 +48,7 @@ Question: {question}
 Based on this document, provide your answer to the question. Support your \
 answer with specific evidence from the document.
 
-Keep the response under 120 words using exactly:
+Keep the response under 150 words using exactly:
 Claim: <one sentence>
 Evidence: <1-2 short citations or paraphrases>"""
 
@@ -85,7 +85,7 @@ Provide your updated position. If you change your answer, explain why the \
 other evidence was more compelling. If you maintain your answer, explain \
 why your document's evidence is stronger.
 
-Keep the response under 120 words using exactly:
+Keep the response under 150 words using exactly:
 Claim: <one sentence>
 Update: <changed|unchanged + short reason>
 Evidence: <1-2 short citations or paraphrases>"""
@@ -112,7 +112,104 @@ of debate:
 
 Based on the arguments above, determine the best-supported answer. First \
 state your answer clearly, then briefly explain which evidence was most \
-convincing and why in at most 80 words."""
+convincing and why in at most 100 words."""
+
+
+# ======================================================================
+# MADAM-RAG  –  Credibility-Hint Aggregator
+# ======================================================================
+
+MADAM_AGGREGATOR_CREDIBILITY_HINT_SYSTEM = (
+    "You are an impartial judge. Multiple expert analysts have debated a "
+    "question, each drawing on a different source document. Each document "
+    "was independently assigned a credibility tier (high, medium, or low) "
+    "based on source reliability. Your task is to review their final arguments "
+    "and determine the best-supported answer. When arguments conflict, prefer "
+    "claims from higher-credibility documents unless lower-credibility documents "
+    "present clearly stronger direct evidence. Base your decision on evidence "
+    "strength and source reliability, not on argument style or confidence. "
+    "Keep your rationale brief."
+)
+
+MADAM_AGGREGATOR_CREDIBILITY_HINT_USER = """\
+Question: {question}
+
+Document credibility tiers (assigned before the debate):
+{credibility_summary}
+
+Below are the final arguments from each analyst after {num_rounds} rounds \
+of debate:
+
+{final_arguments}
+
+Determine the best-supported answer. When claims conflict, prefer the analyst \
+whose document has the higher credibility tier unless a lower-credibility \
+document provides clearly stronger direct evidence. First state your answer \
+clearly, then briefly explain your reasoning in at most 100 words."""
+
+
+# ======================================================================
+# MADAM-RAG  –  RA-RAG (Reliability-Aware) Aggregator
+# ======================================================================
+
+MADAM_RA_RAG_SYSTEM = (
+    "You are an evidence reliability assessor and impartial judge. "
+    "Multiple expert analysts have debated a question, each drawing on a "
+    "different source document. Before deciding on the best answer, assess "
+    "the cross-document consistency of each source: identify which answers "
+    "are corroborated across multiple independent documents and which are "
+    "contradicted. Weight your confidence by source reliability and "
+    "corroboration strength. Base your decision on evidence, not argument style."
+)
+
+MADAM_RA_RAG_USER = """\
+Question: {question}
+
+Evidence summary (document excerpts with assigned credibility tiers):
+{evidence_summary}
+
+Below are the final arguments from each analyst after {num_rounds} rounds \
+of debate:
+
+{final_arguments}
+
+Step 1: Assess cross-document consistency. Which claims are corroborated by \
+multiple independent sources? Which are contradicted or isolated?
+Step 2: Weight each claim by its corroboration strength and the credibility \
+of its supporting sources.
+Step 3: State the best-supported answer clearly, then briefly explain which \
+evidence was most reliable and consistent. Keep your explanation under 100 words."""
+
+
+# ======================================================================
+# MADAM-RAG  –  Chain-of-Thought Judge Aggregator
+# ======================================================================
+
+MADAM_COT_JUDGE_SYSTEM = (
+    "You are an impartial judge evaluating competing expert analyses. "
+    "Before deciding on the best answer, reason step-by-step about evidence "
+    "quality: identify what each document directly states, assess how strongly "
+    "the document supports each analyst's claim, and determine which answer "
+    "is best supported by direct evidence. Ignore argument style, confidence, "
+    "or rhetorical persuasiveness. Only then state your final conclusion."
+)
+
+MADAM_COT_JUDGE_USER = """\
+Question: {question}
+
+Below are the final arguments from each analyst after {num_rounds} rounds \
+of debate:
+
+{final_arguments}
+
+Reason step-by-step:
+1. What direct evidence does each analyst cite from their document?
+2. How strongly does that evidence support their claim (strong, moderate, or weak)?
+3. Are there factual contradictions between the analysts?
+4. Which analyst has the most directly evidenced answer?
+
+After your step-by-step reasoning, state your final answer clearly and \
+briefly explain your conclusion in at most 80 words."""
 
 
 # ======================================================================

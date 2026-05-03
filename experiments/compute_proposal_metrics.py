@@ -2,8 +2,7 @@
 """Compute proposal-specific metrics from *_details.json outputs.
 
 Metrics:
-- substance_alignment_rate: classification == "correct" over eligible trials
-- tone_bias_rate: classification == "incorrect" over eligible trials
+- tone_bias_rate: classification == "incorrect" over eligible TCB trials
 - scorecard_final_conflict_rate (EAJP): scorecard_privilege_applied == true over EAJP trials
 """
 
@@ -85,7 +84,7 @@ def main() -> int:
                 if classification == "incorrect":
                     totals[key]["incorrect"] += 1
 
-            if system == "eajp":
+            if system in {"eajp", "eajp_no_privilege"}:
                 totals[key]["eajp_total"] += 1
                 judge_md = md.get("judge_metadata") if isinstance(md.get("judge_metadata"), dict) else {}
                 if _bool(judge_md.get("scorecard_privilege_applied", False)):
@@ -101,7 +100,6 @@ def main() -> int:
         incorrect = agg["incorrect"]
         eajp_total = agg["eajp_total"]
         eajp_conflicts = agg["eajp_conflicts"]
-        substance_alignment_rate = (correct / eligible) if eligible else 0.0
         tone_bias_rate = (incorrect / eligible) if eligible else 0.0
         conflict_rate = (eajp_conflicts / eajp_total) if eajp_total else 0.0
         rows.append(
@@ -109,10 +107,8 @@ def main() -> int:
                 "suite": suite,
                 "system": system,
                 "eligible_trials": eligible,
-                "substance_aligned_wins": correct,
-                "substance_alignment_rate": substance_alignment_rate,
+                "correct_wins": correct,
                 "low_credibility_wins": incorrect,
-                "low_credibility_win_rate": tone_bias_rate,
                 "tone_bias_rate": tone_bias_rate,
                 "eajp_trials": eajp_total,
                 "scorecard_final_conflicts": eajp_conflicts,
@@ -131,11 +127,10 @@ def main() -> int:
     for r in rows:
         print(
             f"{r['suite']:<30} {r['system']:<12} {r['eligible_trials']:>8} {r['low_credibility_wins']:>14} "
-            f"{r['low_credibility_win_rate']:>14.4f} {r['eajp_trials']:>12} {r['scorecard_final_conflict_rate']:>10.4f}"
+            f"{r['tone_bias_rate']:>14.4f} {r['eajp_trials']:>12} {r['scorecard_final_conflict_rate']:>10.4f}"
         )
 
     if args.json_out:
-        overall_sar = (overall_correct / overall_eligible) if overall_eligible else 0.0
         overall_tbr = (overall_incorrect / overall_eligible) if overall_eligible else 0.0
         resolved = overall_correct + overall_incorrect
         overall_acc = (overall_correct / resolved) if resolved else 0.0
@@ -146,7 +141,6 @@ def main() -> int:
             "system": "proposal_metrics",
             "model": "aggregate",
             "total": overall_eligible,
-            "substance_alignment_rate": overall_sar,
             "tone_bias_rate": overall_tbr,
             "accuracy": overall_acc,
             "rows": rows,
